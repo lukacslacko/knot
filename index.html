@@ -27,6 +27,8 @@
 
   #panel {
     position: fixed; top: 16px; left: 16px; width: 286px;
+    max-height: calc(100vh - 32px);
+    overflow-y: auto; overscroll-behavior: contain;
     background: var(--panel);
     border: 1px solid var(--panel-border);
     border-radius: 14px;
@@ -36,6 +38,12 @@
     padding: 16px 16px 14px;
     user-select: none;
   }
+  /* Slim scrollbar that only shows when the panel overflows. */
+  #panel::-webkit-scrollbar { width: 8px; }
+  #panel::-webkit-scrollbar-thumb {
+    background: rgba(120, 140, 190, 0.35); border-radius: 8px;
+  }
+  #panel { scrollbar-width: thin; scrollbar-color: rgba(120,140,190,0.35) transparent; }
   #panel h1 {
     font-size: 14px; font-weight: 650; letter-spacing: 0.2px;
     margin: 0 0 2px; display: flex; align-items: center; gap: 8px;
@@ -121,8 +129,8 @@
   </div>
 
   <div class="field">
-    <div class="row"><label for="radius">Render radius</label><span class="val" id="radiusVal">0.50</span></div>
-    <input type="range" id="radius" min="0.15" max="2.0" step="0.05" value="0.5" />
+    <div class="row"><label for="radius">Render radius</label><span class="val" id="radiusVal">1.00</span></div>
+    <input type="range" id="radius" min="0.15" max="2.0" step="0.05" value="1.0" />
   </div>
 
   <div class="field">
@@ -176,6 +184,10 @@
     <div class="field">
       <div class="row"><label for="jiggle">Jiggle</label><span class="val" id="jiggleVal">0.00</span></div>
       <input type="range" id="jiggle" min="0" max="3" step="0.05" value="0" />
+    </div>
+    <div class="field">
+      <div class="row"><label for="gravity">Gravity</label><span class="val" id="gravityVal">0.015</span></div>
+      <input type="range" id="gravity" min="0" max="0.2" step="0.005" value="0.015" />
     </div>
     <div class="field">
       <div class="row"><label for="speed">Sim substeps / frame</label><span class="val" id="speedVal">4</span></div>
@@ -266,9 +278,13 @@ keyLight.shadow.camera.bottom = -28;
 keyLight.shadow.bias = -0.0004;
 keyLight.shadow.normalBias = 0.06;
 
+// Fixed floor height: the grid, the shadow catcher, and the physics floor all
+// live here, so the knot rests on the visible grid.
+const GROUND_Y = -22;
+
 // Subtle ground grid for spatial orientation
 const grid = new THREE.GridHelper(80, 40, 0x2a3450, 0x1a2236);
-grid.position.y = -22;
+grid.position.y = GROUND_Y;
 scene.add(grid);
 
 // Shadow catcher: a transparent plane that shows ONLY the received shadow, so it
@@ -279,7 +295,7 @@ const ground = new THREE.Mesh(
   new THREE.ShadowMaterial({ opacity: 0.32 })
 );
 ground.rotation.x = -Math.PI / 2;
-ground.position.y = -22;
+ground.position.y = GROUND_Y;
 ground.receiveShadow = true;
 scene.add(ground);
 
@@ -296,7 +312,7 @@ scene.add(spawnSphere);
 // ---------------------------------------------------------------------------
 const cfg = {
   n: 24,
-  radius: 0.5,          // rendering radius: ball size (cosmetic only)
+  radius: 1.0,          // rendering radius: ball size (cosmetic only)
   interact: 1.0,        // interaction radius: collision happens within 2·interact; drives LOD spacing
   sphere: 15,
   ignoreK: 7,
@@ -306,6 +322,7 @@ const cfg = {
   collide: 1.0,
   damp: 0.9,
   jiggle: 0,
+  gravity: 0.015,       // downward weight per ball; balls rest on the fixed grid floor
   substeps: 4,
   paused: false,
   showLinks: false,
@@ -513,6 +530,11 @@ function step(dt) {
     for (let i = 0; i < n * 3; i++) force[i] += (Math.random() * 2 - 1) * j;
   }
 
+  // --- Gravity: a constant downward weight on every ball (0 = off).
+  if (cfg.gravity > 0) {
+    for (let i = 0; i < n; i++) force[i * 3 + 1] -= cfg.gravity;
+  }
+
   // --- Integrate (damped semi-implicit Euler).
   const damp = cfg.damp;
   for (let i = 0; i < n * 3; i++) {
@@ -520,17 +542,28 @@ function step(dt) {
     pos[i] += vel[i] * dt;
   }
 
+  // --- Floor: a ball's bottom (center − render radius) can't sink below the
+  // fixed grid. Clamp and kill any downward velocity so it rests on the grid.
+  const floorY = GROUND_Y + cfg.radius;
+  for (let i = 0; i < n; i++) {
+    if (pos[i * 3 + 1] < floorY) {
+      pos[i * 3 + 1] = floorY;
+      if (vel[i * 3 + 1] < 0) vel[i * 3 + 1] = 0;
+    }
+  }
+
   recenter();
 }
 
-// Keep the centroid pinned at the origin.
+// Keep the centroid horizontally centered at x=z=0. The vertical position is
+// left free so gravity can pull the knot down onto the floor.
 function recenter() {
   const n = ballCount;
   if (!n) return;
-  let cx = 0, cy = 0, cz = 0;
-  for (let i = 0; i < n; i++) { cx += pos[i * 3]; cy += pos[i * 3 + 1]; cz += pos[i * 3 + 2]; }
-  cx /= n; cy /= n; cz /= n;
-  for (let i = 0; i < n; i++) { pos[i * 3] -= cx; pos[i * 3 + 1] -= cy; pos[i * 3 + 2] -= cz; }
+  let cx = 0, cz = 0;
+  for (let i = 0; i < n; i++) { cx += pos[i * 3]; cz += pos[i * 3 + 2]; }
+  cx /= n; cz /= n;
+  for (let i = 0; i < n; i++) { pos[i * 3] -= cx; pos[i * 3 + 2] -= cz; }
 }
 
 // Adaptive level-of-detail along the cycle: keep the spacing of ball centers
@@ -615,11 +648,8 @@ function syncInstances() {
   const n = ballCount;
   instMesh.count = n;
   const r = cfg.radius;
-  let minY = Infinity;
   for (let i = 0; i < n; i++) {
-    const y = pos[i * 3 + 1];
-    if (y < minY) minY = y;
-    dummy.position.set(pos[i * 3], y, pos[i * 3 + 2]);
+    dummy.position.set(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
     dummy.scale.setScalar(r);
     dummy.updateMatrix();
     instMesh.setMatrixAt(i, dummy.matrix);
@@ -629,9 +659,6 @@ function syncInstances() {
   }
   instMesh.instanceMatrix.needsUpdate = true;
   if (instMesh.instanceColor) instMesh.instanceColor.needsUpdate = true;
-  // Park the shadow catcher (and the orientation grid with it) just beneath the
-  // lowest ball, so its bottom touches the plane.
-  if (n) ground.position.y = grid.position.y = minY - r;
 }
 
 function rebuildLinkLine() {
@@ -662,6 +689,20 @@ let fpsAccum = 0, fpsFrames = 0;
 const fpsEl = document.getElementById('fps');
 const pairEl = document.getElementById('pairCount');
 
+// Pan the camera vertically so it always looks at the knot's centroid height.
+// The knot is centered at x=z=0 (recenter), so only the y of the orbit target
+// needs to track. Moving the camera and the target by the same delta keeps the
+// user's orbit angle and zoom intact — it just follows the knot up and down.
+function followCentroidY() {
+  if (!ballCount) return;
+  let cy = 0;
+  for (let i = 0; i < ballCount; i++) cy += pos[i * 3 + 1];
+  cy /= ballCount;
+  const dy = (cy - controls.target.y) * 0.12;   // smooth follow
+  controls.target.y += dy;
+  camera.position.y += dy;
+}
+
 function animate(now) {
   requestAnimationFrame(animate);
   const frameDt = Math.min((now - lastT) / 1000, 0.05);
@@ -678,6 +719,7 @@ function animate(now) {
   syncLinkLine();
   pairEl.textContent = lastPairCount;
 
+  followCentroidY();
   controls.update();
   renderer.render(scene, camera);
 
@@ -715,6 +757,7 @@ bindSlider('spring', 'spring', v => v.toFixed(2));
 bindSlider('collide', 'collide', v => v.toFixed(2));
 bindSlider('damp', 'damp', v => v.toFixed(2));
 bindSlider('jiggle', 'jiggle', v => v.toFixed(2));
+bindSlider('gravity', 'gravity', v => v.toFixed(3));
 bindSlider('speed', 'substeps', v => v | 0);
 
 document.getElementById('regen').addEventListener('click', regenerateSeed);
@@ -759,7 +802,7 @@ requestAnimationFrame((t) => { lastT = t; animate(t); });
 
 // Debug handle for automated testing (harmless in production).
 window.__dbg = {
-  instMesh,
+  instMesh, camera, controls, grid, ground,
   get pos() { return pos; },
   get n() { return ballCount; },
   outputColorSpace: renderer.outputColorSpace,
