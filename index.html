@@ -213,7 +213,7 @@
 </div>
 
 <div id="stats">balls <b id="ballCount">0</b> · pairs <b id="pairCount">0</b> · <b id="fps">0</b> fps · <b id="mode">…</b></div>
-<div id="hint">drag to orbit · scroll to zoom · right-drag to pan</div>
+<div id="hint">drag to orbit · scroll to zoom · right-drag to pan · click a ball to cut</div>
 
 <script type="importmap">
 {
@@ -359,8 +359,15 @@ let seedPoints = [];   // the N random points defining the loop skeleton
 // sequence for one LOD pass before it is copied back.
 let pos = new Float32Array(MAX_BALLS * 3);
 let vel = new Float32Array(MAX_BALLS * 3);
+// Connectivity: bond[i] === 1 means ball i is joined to its successor (i+1)%n.
+// A pristine loop has every bond set; clicking a ball cuts bonds, turning the
+// cycle into open segments. `topoClosed` is true only for the untouched loop.
+let bond = new Uint32Array(MAX_BALLS);
+let topoClosed = true;
 const posScratch = new Float32Array(MAX_BALLS * 3);
 const velScratch = new Float32Array(MAX_BALLS * 3);
+const bondScratch = new Uint32Array(MAX_BALLS);
+const pendingRemovals = [];   // ball indices clicked, processed one per frame
 let ballCount = 0;
 let lastPairCount = 0;
 let gpu = null;        // WebGPU physics engine, or null (CPU fallback)
@@ -440,10 +447,13 @@ function buildChain() {
     pos[i * 3 + 1] = centers[i].y;
     pos[i * 3 + 2] = centers[i].z;
     vel[i * 3 + 0] = vel[i * 3 + 1] = vel[i * 3 + 2] = 0;
+    bond[i] = 1;                       // fresh closed loop: every ball bonded onward
   }
+  topoClosed = true;
+  pendingRemovals.length = 0;
   recenter();
   rebuildLinkLine();
-  if (gpu) gpu.upload(ballCount);     // push the fresh chain to the GPU
+  if (gpu) { gpu.upload(ballCount); gpu.uploadBond(ballCount); }
   document.getElementById('ballCount').textContent = ballCount;
 }
 
@@ -484,8 +494,9 @@ function step(dt) {
   // Accumulate forces.
   const force = new Float32Array(n * 3);
 
-  // --- Springs: chain-adjacent balls (closed loop) pull toward `restLen` apart.
+  // --- Springs: each bonded edge (i ↔ i+1) pulls toward `restLen` apart.
   for (let i = 0; i < n; i++) {
+    if (!bond[i]) continue;            // cut: no spring across this gap
     const j = (i + 1) % n;
     const dx = pos[j * 3] - pos[i * 3];
     const dy = pos[j * 3 + 1] - pos[i * 3 + 1];
@@ -526,9 +537,10 @@ function step(dt) {
       for (let b = 0; b < bucket.length; b++) {
         const j = bucket[b];
         if (j <= i) continue;            // each unordered pair once
-        // Ignore the K nearest neighbors (either direction) along the cyclic chain.
+        // Ignore the K nearest chain neighbors. Cyclic distance while the loop is
+        // intact; plain index distance once it's been cut into open segments.
         const d = j - i;
-        const cyc = Math.min(d, n - d);
+        const cyc = topoClosed ? Math.min(d, n - d) : d;
         if (cyc <= cfg.ignoreK) continue;
 
         const dx = pos[j * 3] - pos[i * 3];
@@ -593,79 +605,125 @@ function recenter() {
   for (let i = 0; i < n; i++) { pos[i * 3] -= cx; pos[i * 3 + 2] -= cz; }
 }
 
-// Adaptive level-of-detail along the cycle: keep the spacing of ball centers
-// between `mergeRatio` and `splitRatio` times the render radius. Walking the
-// closed loop, an edge shorter than mergeRatio·r drops a ball (merge), an edge
-// longer than splitRatio·r gets a ball inserted at its midpoint (split).
-// Rebuilds the sequence into the scratch buffers, then copies it back.
+// Adaptive level-of-detail: keep the spacing of bonded ball centers between
+// `mergeRatio` and `splitRatio` times the interaction radius. Walks the chain in
+// order; within a bonded run an edge shorter than mergeRatio·r drops a ball
+// (merge) and one longer than splitRatio·r gets a midpoint inserted (split).
+// Merges/splits never cross a cut (bond === 0), so open segments stay separate.
+// Rebuilds positions/velocities AND the bond array into scratch, then copies back.
 function applyLOD() {
   const n = ballCount;
   if (n < 4) return;
-  const rr = cfg.interact;                // LOD spacing is keyed to interaction radius
+  const rr = cfg.interact;
   const minD2 = (cfg.mergeRatio * rr) ** 2;
-  const maxD = cfg.splitRatio * rr;
-  const maxD2 = maxD * maxD;
-  // Floor the ball count so plenty of non-neighbor pairs always remain
-  // (cyc > ignoreK), keeping collisions alive. Without this, over-merging
-  // disables all collisions and the springs implode the loop to a single point.
-  // 6·(K+1) keeps the relaxed loop reasonably sized even for a trivial knot.
-  const MIN_BALLS = 6 * (cfg.ignoreK + 1);
+  const maxD2 = (cfg.splitRatio * rr) ** 2;
+  const MIN_BALLS = 6 * (cfg.ignoreK + 1);   // global floor so collisions stay alive
 
-  let m = 0;                              // number of balls written to scratch
-  const push = (x, y, z, vx, vy, vz) => {
+  let m = 0;                                 // balls written to scratch
+  // `bondedToPrev` records the edge from the previously-pushed ball to this one.
+  const push = (x, y, z, vx, vy, vz, bondedToPrev) => {
     if (m >= MAX_BALLS) return;
+    if (m > 0) bondScratch[m - 1] = bondedToPrev ? 1 : 0;
     const o = m * 3;
     posScratch[o] = x; posScratch[o + 1] = y; posScratch[o + 2] = z;
     velScratch[o] = vx; velScratch[o + 1] = vy; velScratch[o + 2] = vz;
     m++;
   };
 
-  // Keep ball 0 as the anchor, then walk the rest, merging/splitting vs. the
-  // most recently kept ball.
-  push(pos[0], pos[1], pos[2], vel[0], vel[1], vel[2]);
+  push(pos[0], pos[1], pos[2], vel[0], vel[1], vel[2], false);
 
   for (let i = 1; i < n; i++) {
-    const lo = (m - 1) * 3;               // last kept ball
-    const lx = posScratch[lo], ly = posScratch[lo + 1], lz = posScratch[lo + 2];
     const io = i * 3;
     const ix = pos[io], iy = pos[io + 1], iz = pos[io + 2];
+    if (!bond[i - 1]) {                       // cut before i: start a new segment
+      push(ix, iy, iz, vel[io], vel[io + 1], vel[io + 2], false);
+      continue;
+    }
+    const lo = (m - 1) * 3;                    // last kept ball (same segment)
+    const lx = posScratch[lo], ly = posScratch[lo + 1], lz = posScratch[lo + 2];
     const dx = ix - lx, dy = iy - ly, dz = iz - lz;
     const dd = dx * dx + dy * dy + dz * dz;
 
-    if (dd < minD2 && m > MIN_BALLS) continue;          // merge: drop ball i
+    if (dd < minD2 && m > MIN_BALLS) continue; // merge: drop ball i (run continues)
 
-    if (dd > maxD2) {                                   // split: midpoint first
+    if (dd > maxD2) {                          // split: insert a bonded midpoint
       push((lx + ix) * 0.5, (ly + iy) * 0.5, (lz + iz) * 0.5,
            (velScratch[lo] + vel[io]) * 0.5,
            (velScratch[lo + 1] + vel[io + 1]) * 0.5,
-           (velScratch[lo + 2] + vel[io + 2]) * 0.5);
+           (velScratch[lo + 2] + vel[io + 2]) * 0.5, true);
     }
-    push(ix, iy, iz, vel[io], vel[io + 1], vel[io + 2]);
+    push(ix, iy, iz, vel[io], vel[io + 1], vel[io + 2], true);
   }
 
-  // Closing edge: last kept ball back to ball 0 (the loop is cyclic).
-  if (m > 1) {
+  // Final edge. For the pristine closed loop it's the wrap edge back to ball 0
+  // (still subject to merge/split); for open segments there is no wrap.
+  if (topoClosed && m > 1) {
     const lo = (m - 1) * 3;
     const dx = posScratch[0] - posScratch[lo];
     const dy = posScratch[1] - posScratch[lo + 1];
     const dz = posScratch[2] - posScratch[lo + 2];
     const dd = dx * dx + dy * dy + dz * dz;
     if (dd < minD2 && m > MIN_BALLS) {
-      m--;                                              // merge: drop last kept
-    } else if (dd > maxD2) {                            // split: insert midpoint
+      m--;                                     // merge: drop last kept
+      bondScratch[m - 1] = 1;                  // …new last still wraps to 0
+    } else if (dd > maxD2) {
       push((posScratch[lo] + posScratch[0]) * 0.5,
            (posScratch[lo + 1] + posScratch[1]) * 0.5,
            (posScratch[lo + 2] + posScratch[2]) * 0.5,
            (velScratch[lo] + velScratch[0]) * 0.5,
            (velScratch[lo + 1] + velScratch[1]) * 0.5,
-           (velScratch[lo + 2] + velScratch[2]) * 0.5);
+           (velScratch[lo + 2] + velScratch[2]) * 0.5, true);
+      bondScratch[m - 1] = 1;
+    } else {
+      bondScratch[m - 1] = 1;                  // wrap edge present
     }
+  } else if (m > 0) {
+    bondScratch[m - 1] = 0;                    // open: last ball has no successor
   }
 
   pos.set(posScratch.subarray(0, m * 3));
   vel.set(velScratch.subarray(0, m * 3));
+  bond.set(bondScratch.subarray(0, m));
   if (m !== ballCount) document.getElementById('ballCount').textContent = m;
   ballCount = m;
+}
+
+// Remove ball `r`, cutting the chain there. A pristine loop becomes one open
+// segment; an open segment splits in two (or just shortens at an endpoint).
+function performRemoval(r) {
+  const n = ballCount;
+  if (n <= 2 || r < 0 || r >= n) return;
+  if (topoClosed) {
+    // Cycle -> single open path starting just after r; ball r is dropped.
+    let k = 0;
+    for (let off = 1; off < n; off++) {
+      const src = (r + off) % n, o = k * 3, so = src * 3;
+      posScratch[o] = pos[so]; posScratch[o + 1] = pos[so + 1]; posScratch[o + 2] = pos[so + 2];
+      velScratch[o] = vel[so]; velScratch[o + 1] = vel[so + 1]; velScratch[o + 2] = vel[so + 2];
+      bondScratch[k] = 1;
+      k++;
+    }
+    bondScratch[k - 1] = 0;                    // open end, no wrap
+    pos.set(posScratch.subarray(0, k * 3));
+    vel.set(velScratch.subarray(0, k * 3));
+    bond.set(bondScratch.subarray(0, k));
+    ballCount = k;
+    topoClosed = false;
+  } else {
+    // Open: compact out index r and cut between its former neighbors.
+    for (let k = r; k < n - 1; k++) {
+      const o = k * 3, so = (k + 1) * 3;
+      pos[o] = pos[so]; pos[o + 1] = pos[so + 1]; pos[o + 2] = pos[so + 2];
+      vel[o] = vel[so]; vel[o + 1] = vel[so + 1]; vel[o + 2] = vel[so + 2];
+    }
+    const newN = n - 1;
+    for (let k = 0; k < newN; k++) {
+      bondScratch[k] = (r > 0 && k === r - 1) ? 0 : bond[k < r ? k : k + 1];
+    }
+    bond.set(bondScratch.subarray(0, newN));
+    ballCount = newN;
+  }
+  document.getElementById('ballCount').textContent = ballCount;
 }
 
 // ---------------------------------------------------------------------------
@@ -742,7 +800,7 @@ struct Params {
   dt: f32, kSpring: f32, kCol: f32, interact: f32,
   minDist: f32, gravity: f32, jiggle: f32, damp: f32,
   floorY: f32, cellSize: f32, worldMin: f32, cellCap: u32,
-  restLen: f32, pad0: f32, pad1: f32, pad2: f32,
+  restLen: f32, closed: u32, pad1: f32, pad2: f32,
 };
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read_write> pos: array<f32>;
@@ -750,6 +808,7 @@ struct Params {
 @group(0) @binding(3) var<storage, read_write> force: array<f32>;
 @group(0) @binding(4) var<storage, read_write> cellCount: array<atomic<u32>>;
 @group(0) @binding(5) var<storage, read_write> cellItems: array<u32>;
+@group(0) @binding(6) var<storage, read> bond: array<u32>;   // bond[i]=1: edge i↔(i+1)%n
 
 fn pv(i: u32) -> vec3<f32> { return vec3<f32>(pos[3u*i], pos[3u*i+1u], pos[3u*i+2u]); }
 fn springForce(d: vec3<f32>) -> vec3<f32> {   // d = neighbor - self
@@ -791,10 +850,11 @@ fn hash1(s: u32) -> f32 {           // cheap PCG-ish hash -> [0,1)
   if (i >= n) { return; }
   let pi = pv(i);
   var f = vec3<f32>(0.0);
-  // Springs to the two cyclic chain neighbors, pulling toward restLen apart.
+  // Springs along existing bonds only (so cut segments don't stay joined).
   let prev = (i + n - 1u) % n;
   let nxt  = (i + 1u) % n;
-  f += springForce(pv(prev) - pi) + springForce(pv(nxt) - pi);
+  if (bond[prev] == 1u) { f += springForce(pv(prev) - pi); }   // edge prev→i
+  if (bond[i]    == 1u) { f += springForce(pv(nxt)  - pi); }   // edge i→next
   // Collisions: scan the 3x3x3 neighbor cells; skip the K nearest chain neighbors.
   let cx = axis(pi.x); let cy = axis(pi.y); let cz = axis(pi.z);
   let gd = i32(P.gridDim);
@@ -811,7 +871,7 @@ fn hash1(s: u32) -> f32 {           // cheap PCG-ish hash -> [0,1)
           let j = cellItems[cid * P.cellCap + s];
           if (j == i) { continue; }
           let di = select(j - i, i - j, i > j);   // |i - j|
-          let cyc = min(di, n - di);
+          let cyc = select(di, min(di, n - di), P.closed == 1u);
           if (cyc <= P.ignoreK) { continue; }
           let diff = pv(j) - pi;                   // from i to j
           let d2 = dot(diff, diff);
@@ -867,18 +927,19 @@ async function createGPUEngine() {
   const forceBuf    = mk(bytes, U.STORAGE);
   const cellCountBuf= mk(numCells * 4, U.STORAGE);
   const cellItemsBuf= mk(numCells * CELL_CAP * 4, U.STORAGE);
+  const bondBuf     = mk(MAX_BALLS * 4, U.STORAGE | U.COPY_DST);
   const posStaging  = mk(bytes, U.MAP_READ | U.COPY_DST);
   const velStaging  = mk(bytes, U.MAP_READ | U.COPY_DST);
 
   const module = device.createShaderModule({ code: PHYS_WGSL });
-  const bgl = device.createBindGroupLayout({ entries: [0,1,2,3,4,5].map(binding => ({
+  const bgl = device.createBindGroupLayout({ entries: [0,1,2,3,4,5,6].map(binding => ({
     binding, visibility: GPUShaderStage.COMPUTE,
-    buffer: { type: binding === 0 ? 'uniform' : 'storage' },
+    buffer: { type: binding === 0 ? 'uniform' : (binding === 6 ? 'read-only-storage' : 'storage') },
   })) });
   const pl = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
   const pipe = (entryPoint) => device.createComputePipeline({ layout: pl, compute: { module, entryPoint } });
   const pipes = { clear: pipe('clearGrid'), build: pipe('buildGrid'), forces: pipe('computeForces'), integrate: pipe('integrate') };
-  const bind = device.createBindGroup({ layout: bgl, entries: [paramsBuf, posBuf, velBuf, forceBuf, cellCountBuf, cellItemsBuf]
+  const bind = device.createBindGroup({ layout: bgl, entries: [paramsBuf, posBuf, velBuf, forceBuf, cellCountBuf, cellItemsBuf, bondBuf]
     .map((buffer, binding) => ({ binding, resource: { buffer } })) });
 
   const pbuf = new ArrayBuffer(80);
@@ -895,6 +956,7 @@ async function createGPUEngine() {
     pf[8] = 2 * cfg.interact; pf[9] = cfg.gravity; pf[10] = cfg.jiggle; pf[11] = cfg.damp;
     pf[12] = GROUND_Y + cfg.radius; pf[13] = cellSize; pf[14] = WORLD_MIN; pu[15] = CELL_CAP;
     pf[16] = cfg.springTarget * cfg.interact;        // spring rest length
+    pu[17] = topoClosed ? 1 : 0;                     // cyclic vs linear exclusion
     device.queue.writeBuffer(paramsBuf, 0, pbuf);
   }
 
@@ -936,6 +998,7 @@ async function createGPUEngine() {
       device.queue.writeBuffer(posBuf, 0, pos, 0, n * 3);
       device.queue.writeBuffer(velBuf, 0, vel, 0, n * 3);
     },
+    uploadBond: (n) => { device.queue.writeBuffer(bondBuf, 0, bond, 0, n); },
   };
 }
 
@@ -963,10 +1026,24 @@ function followCentroidY() {
 
 let lodTick = 0;
 
+// Apply one queued click-removal per frame (works paused too). On the GPU path
+// it reads the current state back, cuts on the CPU, and re-uploads.
+async function processRemovals() {
+  if (!pendingRemovals.length || ballCount <= 2) return;
+  const r = pendingRemovals.shift();
+  if (r >= ballCount) return;
+  if (gpu) { await gpu.readPositions(ballCount); await gpu.readVelocities(ballCount); }
+  performRemoval(r);
+  if (gpu) { gpu.upload(ballCount); gpu.uploadBond(ballCount); }
+}
+
 async function animate() {
   const now = performance.now();
   const frameDt = Math.min((now - lastT) / 1000, 0.05);
   lastT = now;
+
+  try { await processRemovals(); }
+  catch (e) { console.error('removal failed:', e); pendingRemovals.length = 0; }
 
   if (!cfg.paused && ballCount) {
     if (gpu) {
@@ -980,6 +1057,7 @@ async function animate() {
           recenter();
           applyLOD();
           gpu.upload(ballCount);
+          gpu.uploadBond(ballCount);          // LOD rewrote the bond array
         }
       } catch (e) {
         console.error('GPU physics failed, falling back to CPU:', e);
@@ -1105,6 +1183,24 @@ function updateSpawnSphere() {
 }
 
 // ---------------------------------------------------------------------------
+// Click-to-cut: raycast against the balls and queue the hit for removal. A
+// click that moved more than a few pixels is treated as an orbit drag, not a cut.
+// ---------------------------------------------------------------------------
+const raycaster = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+let downX = 0, downY = 0;
+renderer.domElement.addEventListener('pointerdown', e => { downX = e.clientX; downY = e.clientY; });
+renderer.domElement.addEventListener('pointerup', e => {
+  if (Math.hypot(e.clientX - downX, e.clientY - downY) > 6 || !ballCount) return;  // drag, not click
+  const rect = renderer.domElement.getBoundingClientRect();
+  ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(ndc, camera);
+  const hits = raycaster.intersectObject(instMesh);
+  if (hits.length && hits[0].instanceId != null) pendingRemovals.push(hits[0].instanceId);
+});
+
+// ---------------------------------------------------------------------------
 // Resize
 // ---------------------------------------------------------------------------
 window.addEventListener('resize', () => {
@@ -1128,6 +1224,10 @@ window.__dbg = {
   instMesh, camera, controls, grid, ground,
   get pos() { return pos; },
   get n() { return ballCount; },
+  get bond() { return bond; },
+  get topoClosed() { return topoClosed; },
+  bondCount() { let s = 0; for (let i = 0; i < ballCount; i++) s += bond[i]; return s; },
+  queueRemoval(i) { pendingRemovals.push(i); },   // simulate a click on ball i
   outputColorSpace: renderer.outputColorSpace,
   centroid() {
     let cx = 0, cy = 0, cz = 0;
