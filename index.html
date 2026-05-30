@@ -629,8 +629,9 @@ function syncInstances() {
   }
   instMesh.instanceMatrix.needsUpdate = true;
   if (instMesh.instanceColor) instMesh.instanceColor.needsUpdate = true;
-  // Park the shadow catcher just beneath the lowest ball (its bottom touches it).
-  if (n) ground.position.y = minY - r;
+  // Park the shadow catcher (and the orientation grid with it) just beneath the
+  // lowest ball, so its bottom touches the plane.
+  if (n) ground.position.y = grid.position.y = minY - r;
 }
 
 function rebuildLinkLine() {
