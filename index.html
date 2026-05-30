@@ -584,7 +584,9 @@ function syncInstances() {
     dummy.scale.setScalar(r);
     dummy.updateMatrix();
     instMesh.setMatrixAt(i, dummy.matrix);
-    instMesh.setColorAt(i, tmpColor.setRGB(1, 1, 1));
+    // Hue makes one full turn around the cycle so the loop's path reads as a
+    // rainbow gradient from start back to start.
+    instMesh.setColorAt(i, tmpColor.setHSL(i / n, 0.78, 0.55));
   }
   instMesh.instanceMatrix.needsUpdate = true;
   if (instMesh.instanceColor) instMesh.instanceColor.needsUpdate = true;
