@@ -153,11 +153,11 @@
   <details>
     <summary>Physics tuning</summary>
     <div class="field" style="margin-top:10px">
-      <div class="row"><label for="mergeRatio">LOD merge (× render r)</label><span class="val" id="mergeRatioVal">0.50</span></div>
+      <div class="row"><label for="mergeRatio">LOD merge (× interact r)</label><span class="val" id="mergeRatioVal">0.50</span></div>
       <input type="range" id="mergeRatio" min="0.1" max="1.0" step="0.05" value="0.5" />
     </div>
     <div class="field">
-      <div class="row"><label for="splitRatio">LOD split (× render r)</label><span class="val" id="splitRatioVal">1.00</span></div>
+      <div class="row"><label for="splitRatio">LOD split (× interact r)</label><span class="val" id="splitRatioVal">1.00</span></div>
       <input type="range" id="splitRatio" min="0.5" max="2.5" step="0.05" value="1.0" />
     </div>
     <div class="field">
@@ -267,8 +267,8 @@ const cfg = {
   interact: 0.5,        // interaction radius: collision happens within 2·interact
   sphere: 10,
   ignoreK: 4,
-  mergeRatio: 0.5,      // LOD: drop a ball when a chain edge is shorter than this × render radius
-  splitRatio: 1.0,      // LOD: insert a ball when a chain edge is longer than this × render radius
+  mergeRatio: 0.5,      // LOD: drop a ball when a chain edge is shorter than this × interact radius
+  splitRatio: 1.0,      // LOD: insert a ball when a chain edge is longer than this × interact radius
   spring: 0.6,
   collide: 1.0,
   damp: 0.9,
@@ -343,7 +343,7 @@ function regenerateSeed() {
 // Resample the closed polyline (the cycle through seedPoints) placing ball
 // centers spaced `radius` apart by arc length, then (re)build the buffers.
 function buildChain() {
-  const spacing = cfg.radius;            // centers are `radius` apart
+  const spacing = cfg.interact;          // centers spaced one interaction radius apart
   const pts = seedPoints;
   const N = pts.length;
   if (N < 3) return;
@@ -505,7 +505,7 @@ function recenter() {
 function applyLOD() {
   const n = ballCount;
   if (n < 4) return;
-  const rr = cfg.radius;
+  const rr = cfg.interact;                // LOD spacing is keyed to interaction radius
   const minD2 = (cfg.mergeRatio * rr) ** 2;
   const maxD = cfg.splitRatio * rr;
   const maxD2 = maxD * maxD;
@@ -661,7 +661,7 @@ function bindSlider(id, key, fmt, onChange) {
 }
 
 bindSlider('n', 'n', v => v | 0, regenerateSeed);
-bindSlider('radius', 'radius', v => v.toFixed(2)); // render radius: no rebuild — LOD adapts the chain
+bindSlider('radius', 'radius', v => v.toFixed(2)); // render radius: purely cosmetic (ball size only)
 bindSlider('interact', 'interact', v => v.toFixed(2));
 bindSlider('sphere', 'sphere', v => (v % 1 ? v.toFixed(1) : v), () => { updateSpawnSphere(); });
 bindSlider('ignoreK', 'ignoreK', v => v | 0);

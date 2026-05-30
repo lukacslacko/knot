@@ -20,20 +20,22 @@ into a self-organizing, self-avoiding clump.
      tightly on itself while still avoiding distant strands. Larger K → tighter
      pull-together.
    - **Adaptive level-of-detail** keeps the bead spacing even as the rope
-     deforms: a chain edge shorter than `mergeRatio · render radius` drops a ball,
-     and one longer than `splitRatio · render radius` gets a ball inserted at its
-     midpoint. So the ball count rises and falls automatically while the rope
-     finds its equilibrium length.
+     deforms: a chain edge shorter than `mergeRatio · interact radius` drops a
+     ball, and one longer than `splitRatio · interact radius` gets a ball
+     inserted at its midpoint. So the ball count rises and falls automatically
+     while the rope finds its equilibrium length.
    - The **centroid is pinned at the origin** after every step.
 
 The result: the loop collapses out of its sphere-filling tangle into a compact,
 evenly-beaded, self-avoiding rope that settles at the length where the spring
 pull and the collision push balance.
 
-There are two independent radii. **Render radius** sets the drawn ball size and
-the target bead spacing (and the LOD band). **Interact radius** sets the
-collision distance (`2·interact`). They start equal; pull them apart to e.g.
-draw fat beads that collide like thin ones (denser tangle) or vice versa.
+There are two independent radii. **Render radius** is purely cosmetic — it only
+changes the drawn ball size, so you can dial it up or down to view the same
+structure differently with no effect on the simulation. **Interact radius**
+drives everything structural: the collision distance (`2·interact`), the bead
+spacing, and the LOD band. They start equal; pull them apart to e.g. draw fat
+beads on a finely-spaced rope, or thin beads with wide gaps.
 
 ## Run it
 
@@ -54,15 +56,15 @@ software renderers will look dim.
 | Control | Effect |
 | --- | --- |
 | **Random points (N)** | Number of random seed points in the loop (regenerates). |
-| **Render radius** | Drawn ball size and target bead spacing. Changing it does **not** regenerate — the LOD pass re-targets the spacing live. |
-| **Interact radius** | Collision distance (`2·interact`), independent of the drawn size. |
+| **Render radius** | Drawn ball size only — purely cosmetic, no effect on the simulation. Tune it freely to view the structure differently. |
+| **Interact radius** | Drives the simulation: collision distance (`2·interact`), bead spacing, and the LOD band. |
 | **Sphere radius (spawn)** | Radius of the sphere the random points are drawn from. |
 | **Ignore K neighbors** | How many chain-neighbors (each direction) are exempt from collision. Higher = the loop pulls together more tightly. Default 4. |
 | **Regenerate** | Draw a fresh set of random points. |
 | **Pause / Resume** | Freeze or resume the simulation. |
 | **Chain links** | Draw the loop connectivity as a line. |
 | **Spawn sphere** | Show the wireframe spawn sphere for reference. |
-| **Physics tuning** | LOD merge/split ratios (× render radius), spring pull, collision push, damping, jiggle, and substeps/frame. |
+| **Physics tuning** | LOD merge/split ratios (× interact radius), spring pull, collision push, damping, jiggle, and substeps/frame. |
 
 Drag to orbit, scroll to zoom, right-drag to pan.
 
