@@ -24,7 +24,10 @@ into a self-organizing, self-avoiding clump.
      ball, and one longer than `splitRatio · interact radius` gets a ball
      inserted at its midpoint. So the ball count rises and falls automatically
      while the rope finds its equilibrium length.
-   - The **centroid is pinned at the origin** after every step.
+   - **Gravity** gives each ball weight, pulling the knot down onto a fixed
+     grid floor that it can't sink through, so it settles into a resting pile.
+     The centroid is kept horizontally centered (`x=z=0`) while its height is
+     left free, and the camera pans up/down to keep looking at the centroid.
 
 The result: the loop collapses out of its sphere-filling tangle into a compact,
 evenly-beaded, self-avoiding rope that settles at the length where the spring
@@ -65,7 +68,7 @@ software renderers will look dim.
 | **Shadows** | Soft shadows: the rope self-shadows and casts onto a ground catcher. On by default; turn off to skip the shadow pass. |
 | **Chain links** | Draw the loop connectivity as a line. |
 | **Spawn sphere** | Show the wireframe spawn sphere for reference. |
-| **Physics tuning** | LOD merge/split ratios (× interact radius), spring pull, collision push, damping, jiggle, and substeps/frame. |
+| **Physics tuning** | LOD merge/split ratios (× interact radius), spring pull, collision push, damping, jiggle, **gravity**, and substeps/frame. |
 
 Drag to orbit, scroll to zoom, right-drag to pan.
 
