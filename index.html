@@ -615,8 +615,11 @@ function syncInstances() {
   const n = ballCount;
   instMesh.count = n;
   const r = cfg.radius;
+  let minY = Infinity;
   for (let i = 0; i < n; i++) {
-    dummy.position.set(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
+    const y = pos[i * 3 + 1];
+    if (y < minY) minY = y;
+    dummy.position.set(pos[i * 3], y, pos[i * 3 + 2]);
     dummy.scale.setScalar(r);
     dummy.updateMatrix();
     instMesh.setMatrixAt(i, dummy.matrix);
@@ -626,6 +629,8 @@ function syncInstances() {
   }
   instMesh.instanceMatrix.needsUpdate = true;
   if (instMesh.instanceColor) instMesh.instanceColor.needsUpdate = true;
+  // Park the shadow catcher just beneath the lowest ball (its bottom touches it).
+  if (n) ground.position.y = minY - r;
 }
 
 function rebuildLinkLine() {
