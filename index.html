@@ -202,7 +202,7 @@
     <div class="field" style="margin-bottom:8px">
       <label style="display:flex; align-items:center; gap:6px; color:var(--ink-dim); cursor:pointer">
         <input type="checkbox" id="autoSubsteps" checked style="accent-color:var(--accent)" />
-        Auto substeps → 30 fps
+        Auto substeps → 120 fps
       </label>
     </div>
     <div class="field">
@@ -342,7 +342,7 @@ const cfg = {
   jiggle: 0,
   gravity: 0.015,       // downward weight per ball; balls rest on the fixed grid floor
   substeps: 4,
-  autoSubsteps: true,   // adapt substeps each ~0.5s to hold ~30 fps
+  autoSubsteps: true,   // adapt substeps each ~0.5s to hold ~120 fps
   paused: false,
   showLinks: false,
   showSpawn: false,
@@ -1014,9 +1014,9 @@ async function animate() {
   requestAnimationFrame(animate);
 }
 
-// Drive the substeps/frame toward whatever holds ~30 fps. Proportional step with
+// Drive the substeps/frame toward whatever holds ~120 fps. Proportional step with
 // a deadband (no thrash near target) and a rate limit (no wild swings).
-const FPS_TARGET = 30;
+const FPS_TARGET = 120;
 const MAX_SUBSTEPS = 120;
 function autoTuneSubsteps(fps) {
   if (fps <= 0 || Math.abs(fps - FPS_TARGET) <= 3) return;
