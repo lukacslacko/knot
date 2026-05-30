@@ -68,7 +68,7 @@ software renderers will look dim.
 | **Shadows** | Soft shadows: the rope self-shadows and casts onto a ground catcher. On by default; turn off to skip the shadow pass. |
 | **Chain links** | Draw the loop connectivity as a line. |
 | **Spawn sphere** | Show the wireframe spawn sphere for reference. |
-| **Physics tuning** | LOD merge/split ratios (× interact radius), spring pull, collision push, damping, jiggle, **gravity**, and substeps/frame. |
+| **Physics tuning** | LOD merge/split ratios (× interact radius), spring pull, collision push, damping, jiggle, **gravity**, and substeps/frame. **Auto substeps** (on by default) adapts the substeps/frame to hold ~30 fps — it spends spare GPU headroom on more simulation per frame; uncheck it to set substeps manually. |
 
 Drag to orbit, scroll to zoom, right-drag to pan.
 
