@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Spring Chain — self-organizing ball &amp; spring loop</title>
+<style>
+  :root {
+    --bg: #0a0c12;
+    --panel: rgba(18, 22, 32, 0.82);
+    --panel-border: rgba(120, 140, 190, 0.18);
+    --ink: #e7ecf6;
+    --ink-dim: #9aa6c2;
+    --accent: #6ea8fe;
+    --accent-2: #f7768e;
+    --track: rgba(120, 140, 190, 0.22);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background: radial-gradient(1200px 800px at 70% -10%, #131a2b 0%, var(--bg) 60%);
+    color: var(--ink);
+    font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  #panel {
+    position: fixed; top: 16px; left: 16px; width: 286px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 14px;
+    backdrop-filter: blur(14px) saturate(1.2);
+    -webkit-backdrop-filter: blur(14px) saturate(1.2);
+    box-shadow: 0 18px 50px rgba(0,0,0,0.45);
+    padding: 16px 16px 14px;
+    user-select: none;
+  }
+  #panel h1 {
+    font-size: 14px; font-weight: 650; letter-spacing: 0.2px;
+    margin: 0 0 2px; display: flex; align-items: center; gap: 8px;
+  }
+  #panel h1 .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    box-shadow: 0 0 12px var(--accent);
+  }
+  #panel .sub { color: var(--ink-dim); font-size: 11px; margin: 0 0 14px; }
+
+  .field { margin: 11px 0; }
+  .field .row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px; }
+  .field label { color: var(--ink-dim); font-size: 11.5px; letter-spacing: .2px; }
+  .field .val { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--ink); }
+
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 4px; border-radius: 4px; background: var(--track);
+    outline: none; cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 15px; height: 15px; border-radius: 50%;
+    background: var(--ink);
+    border: 2px solid var(--accent);
+    box-shadow: 0 2px 6px rgba(0,0,0,.5);
+  }
+  input[type=range]::-moz-range-thumb {
+    width: 15px; height: 15px; border-radius: 50%;
+    background: var(--ink); border: 2px solid var(--accent);
+  }
+
+  .buttons { display: flex; gap: 8px; margin-top: 14px; }
+  button {
+    flex: 1; cursor: pointer; color: var(--ink);
+    background: rgba(110,168,254,0.14);
+    border: 1px solid rgba(110,168,254,0.35);
+    border-radius: 9px; padding: 9px 10px; font-size: 12.5px; font-weight: 600;
+    transition: background .15s, transform .05s;
+  }
+  button:hover { background: rgba(110,168,254,0.24); }
+  button:active { transform: translateY(1px); }
+  button.secondary {
+    background: rgba(120,140,190,0.10);
+    border-color: rgba(120,140,190,0.28);
+  }
+  button.secondary:hover { background: rgba(120,140,190,0.2); }
+
+  .toggles { display: flex; gap: 14px; margin-top: 12px; flex-wrap: wrap; }
+  .toggles label { display: flex; align-items: center; gap: 6px; color: var(--ink-dim); cursor: pointer; }
+  .toggles input { accent-color: var(--accent); }
+
+  details { margin-top: 12px; border-top: 1px solid var(--panel-border); padding-top: 8px; }
+  summary { cursor: pointer; color: var(--ink-dim); font-size: 11.5px; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "▸ "; color: var(--accent); }
+  details[open] summary::before { content: "▾ "; }
+
+  #stats {
+    position: fixed; bottom: 14px; left: 16px;
+    color: var(--ink-dim); font-size: 11px; font-variant-numeric: tabular-nums;
+    background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 9px; padding: 7px 11px; backdrop-filter: blur(10px);
+  }
+  #stats b { color: var(--ink); font-weight: 600; }
+  #hint {
+    position: fixed; bottom: 14px; right: 16px;
+    color: var(--ink-dim); font-size: 11px; text-align: right; opacity: .8;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="panel">
+  <h1><span class="dot"></span> Spring Chain</h1>
+  <p class="sub">A random closed loop of balls relaxes under springs &amp; collisions.</p>
+
+  <div class="field">
+    <div class="row"><label for="n">Random points (N)</label><span class="val" id="nVal">24</span></div>
+    <input type="range" id="n" min="3" max="120" step="1" value="24" />
+  </div>
+
+  <div class="field">
+    <div class="row"><label for="radius">Render radius</label><span class="val" id="radiusVal">0.50</span></div>
+    <input type="range" id="radius" min="0.15" max="2.0" step="0.05" value="0.5" />
+  </div>
+
+  <div class="field">
+    <div class="row"><label for="interact">Interact radius</label><span class="val" id="interactVal">0.50</span></div>
+    <input type="range" id="interact" min="0.15" max="2.0" step="0.05" value="0.5" />
+  </div>
+
+  <div class="field">
+    <div class="row"><label for="sphere">Sphere radius (spawn)</label><span class="val" id="sphereVal">10</span></div>
+    <input type="range" id="sphere" min="3" max="20" step="0.5" value="10" />
+  </div>
+
+  <div class="field">
+    <div class="row"><label for="ignoreK">Ignore K neighbors (collision)</label><span class="val" id="ignoreKVal">4</span></div>
+    <input type="range" id="ignoreK" min="0" max="16" step="1" value="4" />
+  </div>
+
+  <div class="buttons">
+    <button id="regen">Regenerate</button>
+    <button id="pause" class="secondary">Pause</button>
+  </div>
+
+  <div class="toggles">
+    <label><input type="checkbox" id="showLinks" /> Chain links</label>
+    <label><input type="checkbox" id="showSpawn" /> Spawn sphere</label>
+  </div>
+
+  <details>
+    <summary>Physics tuning</summary>
+    <div class="field" style="margin-top:10px">
+      <div class="row"><label for="mergeRatio">LOD merge (× render r)</label><span class="val" id="mergeRatioVal">0.50</span></div>
+      <input type="range" id="mergeRatio" min="0.1" max="1.0" step="0.05" value="0.5" />
+    </div>
+    <div class="field">
+      <div class="row"><label for="splitRatio">LOD split (× render r)</label><span class="val" id="splitRatioVal">1.00</span></div>
+      <input type="range" id="splitRatio" min="0.5" max="2.5" step="0.05" value="1.0" />
+    </div>
+    <div class="field">
+      <div class="row"><label for="spring">Spring pull (→ 0)</label><span class="val" id="springVal">0.60</span></div>
+      <input type="range" id="spring" min="0" max="2" step="0.02" value="0.6" />
+    </div>
+    <div class="field">
+      <div class="row"><label for="collide">Collision push</label><span class="val" id="collideVal">1.00</span></div>
+      <input type="range" id="collide" min="0" max="2" step="0.02" value="1.0" />
+    </div>
+    <div class="field">
+      <div class="row"><label for="damp">Damping</label><span class="val" id="dampVal">0.90</span></div>
+      <input type="range" id="damp" min="0.5" max="0.99" step="0.01" value="0.9" />
+    </div>
+    <div class="field">
+      <div class="row"><label for="jiggle">Jiggle</label><span class="val" id="jiggleVal">0.00</span></div>
+      <input type="range" id="jiggle" min="0" max="3" step="0.05" value="0" />
+    </div>
+    <div class="field">
+      <div class="row"><label for="speed">Sim substeps / frame</label><span class="val" id="speedVal">4</span></div>
+      <input type="range" id="speed" min="1" max="10" step="1" value="4" />
+    </div>
+  </details>
+</div>
+
+<div id="stats">balls <b id="ballCount">0</b> · collision pairs <b id="pairCount">0</b> · <b id="fps">0</b> fps</div>
+<div id="hint">drag to orbit · scroll to zoom · right-drag to pan</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------------------------------------------------------------------------
+// Scene setup
+// ---------------------------------------------------------------------------
+const appEl = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+// Filmic tone mapping: rolls bright highlights off smoothly instead of clipping
+// them to a flat white blob, so lit faces keep a visible rounded gradient.
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+appEl.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const BG = 0x6a6f78;                 // grey backdrop so white balls read as white
+scene.background = new THREE.Color(BG);
+scene.fog = new THREE.FogExp2(BG, 0.006);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.position.set(0, 6, 34);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 4;
+controls.maxDistance = 200;
+
+// Lighting. One dominant key light gives the bright (near-white) lit side; a
+// dim fill and rim keep shadows from going pure black without flattening them;
+// ambient/hemisphere are deliberately low so shadowed faces stay dark. The
+// contrast (roundness) comes from the strong directional gradient, and ACES
+// tone mapping keeps the brightest faces from clipping to a flat white patch.
+// (Turned down a touch now that the backdrop is grey rather than black.)
+scene.add(new THREE.HemisphereLight(0xcdd8f2, 0x05070c, 0.38));
+scene.add(new THREE.AmbientLight(0xffffff, 0.1));
+const keyDirs = [
+  { color: 0xffffff, intensity: 3.0, pos: [ 10,  16,  10] }, // dominant key
+  { color: 0xbcd0ff, intensity: 0.75, pos: [-13,  -1,  -4] }, // dim cool fill
+  { color: 0x88aaff, intensity: 1.15, pos: [ -6,   8, -14] }, // back rim (edge separation)
+];
+for (const d of keyDirs) {
+  const light = new THREE.DirectionalLight(d.color, d.intensity);
+  light.position.set(...d.pos);
+  scene.add(light);
+}
+
+// Subtle ground grid for spatial orientation
+const grid = new THREE.GridHelper(80, 40, 0x2a3450, 0x1a2236);
+grid.position.y = -22;
+scene.add(grid);
+
+// Spawn-sphere reference wireframe (toggleable)
+const spawnSphere = new THREE.Mesh(
+  new THREE.SphereGeometry(1, 32, 16),
+  new THREE.MeshBasicMaterial({ color: 0x6ea8fe, wireframe: true, transparent: true, opacity: 0.08 })
+);
+spawnSphere.visible = false;
+scene.add(spawnSphere);
+
+// ---------------------------------------------------------------------------
+// Simulation state
+// ---------------------------------------------------------------------------
+const cfg = {
+  n: 24,
+  radius: 0.5,          // rendering radius: ball size + spacing of centers
+  interact: 0.5,        // interaction radius: collision happens within 2·interact
+  sphere: 10,
+  ignoreK: 4,
+  mergeRatio: 0.5,      // LOD: drop a ball when a chain edge is shorter than this × render radius
+  splitRatio: 1.0,      // LOD: insert a ball when a chain edge is longer than this × render radius
+  spring: 0.6,
+  collide: 1.0,
+  damp: 0.9,
+  jiggle: 0,
+  substeps: 4,
+  paused: false,
+  showLinks: false,
+  showSpawn: false,
+};
+
+// Instanced rendering ---------------------------------------------------------
+const MAX_BALLS = 12000;
+
+let seedPoints = [];   // the N random points defining the loop skeleton
+// Ball centers/velocities live in fixed-capacity flat arrays; `ballCount` is the
+// logical length. The adaptive LOD pass adds/removes balls in place, so we never
+// reallocate during the simulation — `posScratch`/`velScratch` hold the rebuilt
+// sequence for one LOD pass before it is copied back.
+let pos = new Float32Array(MAX_BALLS * 3);
+let vel = new Float32Array(MAX_BALLS * 3);
+const posScratch = new Float32Array(MAX_BALLS * 3);
+const velScratch = new Float32Array(MAX_BALLS * 3);
+let ballCount = 0;
+let lastPairCount = 0;
+const ballGeo = new THREE.SphereGeometry(1, 18, 14);
+// NOTE: do NOT set vertexColors here. For an InstancedMesh the per-instance
+// color comes from `instanceColor` (the USE_INSTANCING_COLOR shader path).
+// Enabling vertexColors would make the shader also multiply by a per-vertex
+// `color` attribute that this geometry lacks — which reads as (0,0,0) and turns
+// the albedo black (the "graphite" bug).
+const ballMat = new THREE.MeshStandardMaterial({
+  roughness: 0.5, metalness: 0.0,
+});
+let instMesh = new THREE.InstancedMesh(ballGeo, ballMat, MAX_BALLS);
+instMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+instMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_BALLS * 3), 3);
+instMesh.count = 0;
+scene.add(instMesh);
+
+const dummy = new THREE.Object3D();
+const tmpColor = new THREE.Color();
+
+// Chain link line (toggleable) -----------------------------------------------
+let linkLine = null;
+
+// ---------------------------------------------------------------------------
+// Geometry generation
+// ---------------------------------------------------------------------------
+
+// Uniform random point inside a sphere of the given radius.
+function randomInSphere(R) {
+  // r ∝ u^(1/3) gives uniform volume density; direction uniform on unit sphere.
+  const u = Math.random();
+  const r = R * Math.cbrt(u);
+  const cosT = 2 * Math.random() - 1;
+  const sinT = Math.sqrt(1 - cosT * cosT);
+  const phi = 2 * Math.PI * Math.random();
+  return new THREE.Vector3(
+    r * sinT * Math.cos(phi),
+    r * sinT * Math.sin(phi),
+    r * cosT
+  );
+}
+
+// Pick N fresh random seed points in the spawn sphere.
+function regenerateSeed() {
+  seedPoints = [];
+  for (let i = 0; i < cfg.n; i++) seedPoints.push(randomInSphere(cfg.sphere));
+  buildChain();
+}
+
+// Resample the closed polyline (the cycle through seedPoints) placing ball
+// centers spaced `radius` apart by arc length, then (re)build the buffers.
+function buildChain() {
+  const spacing = cfg.radius;            // centers are `radius` apart
+  const pts = seedPoints;
+  const N = pts.length;
+  if (N < 3) return;
+
+  // Total perimeter of the closed loop.
+  let total = 0;
+  for (let i = 0; i < N; i++) total += pts[i].distanceTo(pts[(i + 1) % N]);
+
+  // How many balls fit. Guard against absurd counts.
+  let count = Math.max(3, Math.floor(total / spacing));
+  count = Math.min(count, MAX_BALLS);
+
+  const step = total / count;            // even spacing so the loop closes cleanly
+  const centers = [];
+  for (let k = 0; k < count; k++) {
+    centers.push(pointAtArcLength(pts, k * step)); // arc-length position of center k
+  }
+
+  ballCount = centers.length;
+  for (let i = 0; i < ballCount; i++) {
+    pos[i * 3 + 0] = centers[i].x;
+    pos[i * 3 + 1] = centers[i].y;
+    pos[i * 3 + 2] = centers[i].z;
+    vel[i * 3 + 0] = vel[i * 3 + 1] = vel[i * 3 + 2] = 0;
+  }
+  recenter();
+  rebuildLinkLine();
+  document.getElementById('ballCount').textContent = ballCount;
+}
+
+// Point at a given arc length along the closed polyline.
+function pointAtArcLength(pts, target) {
+  const N = pts.length;
+  let acc = 0;
+  for (let i = 0; i < N; i++) {
+    const a = pts[i], b = pts[(i + 1) % N];
+    const segLen = a.distanceTo(b);
+    if (acc + segLen >= target || i === N - 1) {
+      const t = segLen > 1e-9 ? (target - acc) / segLen : 0;
+      return new THREE.Vector3().lerpVectors(a, b, Math.min(Math.max(t, 0), 1));
+    }
+    acc += segLen;
+  }
+  return pts[0].clone();
+}
+
+// ---------------------------------------------------------------------------
+// Physics
+// ---------------------------------------------------------------------------
+
+// Spatial hash grid for broad-phase collision among balls 3+ apart on the chain.
+const hashGrid = new Map();
+function gridKey(ix, iy, iz) { return ix + ',' + iy + ',' + iz; }
+
+function step(dt) {
+  const k_spring = cfg.spring;
+  const k_col = cfg.collide;
+  const r = cfg.interact;                // collisions use the interaction radius
+  const minDist = 2 * r;                 // balls just touch at 2·interact
+  const cell = minDist;                  // grid cell = interaction range
+  const n = ballCount;
+
+  // Accumulate forces.
+  const force = new Float32Array(n * 3);
+
+  // --- Springs: chain-adjacent balls (closed loop), target length 0 -> pull together.
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const dx = pos[j * 3] - pos[i * 3];
+    const dy = pos[j * 3 + 1] - pos[i * 3 + 1];
+    const dz = pos[j * 3 + 2] - pos[i * 3 + 2];
+    // Target distance 0 => force is proportional to the full separation vector.
+    const fx = k_spring * dx, fy = k_spring * dy, fz = k_spring * dz;
+    force[i * 3] += fx;     force[i * 3 + 1] += fy;     force[i * 3 + 2] += fz;
+    force[j * 3] -= fx;     force[j * 3 + 1] -= fy;     force[j * 3 + 2] -= fz;
+  }
+
+  // --- Collisions: rebuild grid, test near pairs, skip 1st/2nd chain neighbors.
+  hashGrid.clear();
+  for (let i = 0; i < n; i++) {
+    const ix = Math.floor(pos[i * 3] / cell);
+    const iy = Math.floor(pos[i * 3 + 1] / cell);
+    const iz = Math.floor(pos[i * 3 + 2] / cell);
+    const key = gridKey(ix, iy, iz);
+    let bucket = hashGrid.get(key);
+    if (!bucket) { bucket = []; hashGrid.set(key, bucket); }
+    bucket.push(i);
+  }
+
+  let pairs = 0;
+  for (let i = 0; i < n; i++) {
+    const cx = Math.floor(pos[i * 3] / cell);
+    const cy = Math.floor(pos[i * 3 + 1] / cell);
+    const cz = Math.floor(pos[i * 3 + 2] / cell);
+    for (let gx = -1; gx <= 1; gx++)
+    for (let gy = -1; gy <= 1; gy++)
+    for (let gz = -1; gz <= 1; gz++) {
+      const bucket = hashGrid.get(gridKey(cx + gx, cy + gy, cz + gz));
+      if (!bucket) continue;
+      for (let b = 0; b < bucket.length; b++) {
+        const j = bucket[b];
+        if (j <= i) continue;            // each unordered pair once
+        // Ignore the K nearest neighbors (either direction) along the cyclic chain.
+        const d = j - i;
+        const cyc = Math.min(d, n - d);
+        if (cyc <= cfg.ignoreK) continue;
+
+        const dx = pos[j * 3] - pos[i * 3];
+        const dy = pos[j * 3 + 1] - pos[i * 3 + 1];
+        const dz = pos[j * 3 + 2] - pos[i * 3 + 2];
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 >= minDist * minDist || d2 < 1e-12) continue;
+
+        pairs++;
+        const dist = Math.sqrt(d2);
+        const overlap = minDist - dist;
+        const inv = 1 / dist;
+        const fx = -k_col * overlap * dx * inv;
+        const fy = -k_col * overlap * dy * inv;
+        const fz = -k_col * overlap * dz * inv;
+        force[i * 3] += fx;   force[i * 3 + 1] += fy;   force[i * 3 + 2] += fz;
+        force[j * 3] -= fx;   force[j * 3 + 1] -= fy;   force[j * 3 + 2] -= fz;
+      }
+    }
+  }
+  lastPairCount = pairs;
+
+  // --- Jiggle: random thermal kick added to every ball (0 = off).
+  if (cfg.jiggle > 0) {
+    const j = cfg.jiggle;
+    for (let i = 0; i < n * 3; i++) force[i] += (Math.random() * 2 - 1) * j;
+  }
+
+  // --- Integrate (damped semi-implicit Euler).
+  const damp = cfg.damp;
+  for (let i = 0; i < n * 3; i++) {
+    vel[i] = (vel[i] + force[i] * dt) * damp;
+    pos[i] += vel[i] * dt;
+  }
+
+  recenter();
+}
+
+// Keep the centroid pinned at the origin.
+function recenter() {
+  const n = ballCount;
+  if (!n) return;
+  let cx = 0, cy = 0, cz = 0;
+  for (let i = 0; i < n; i++) { cx += pos[i * 3]; cy += pos[i * 3 + 1]; cz += pos[i * 3 + 2]; }
+  cx /= n; cy /= n; cz /= n;
+  for (let i = 0; i < n; i++) { pos[i * 3] -= cx; pos[i * 3 + 1] -= cy; pos[i * 3 + 2] -= cz; }
+}
+
+// Adaptive level-of-detail along the cycle: keep the spacing of ball centers
+// between `mergeRatio` and `splitRatio` times the render radius. Walking the
+// closed loop, an edge shorter than mergeRatio·r drops a ball (merge), an edge
+// longer than splitRatio·r gets a ball inserted at its midpoint (split).
+// Rebuilds the sequence into the scratch buffers, then copies it back.
+function applyLOD() {
+  const n = ballCount;
+  if (n < 4) return;
+  const rr = cfg.radius;
+  const minD2 = (cfg.mergeRatio * rr) ** 2;
+  const maxD = cfg.splitRatio * rr;
+  const maxD2 = maxD * maxD;
+  // Floor the ball count so plenty of non-neighbor pairs always remain
+  // (cyc > ignoreK), keeping collisions alive. Without this, over-merging
+  // disables all collisions and the springs implode the loop to a single point.
+  // 6·(K+1) keeps the relaxed loop reasonably sized even for a trivial knot.
+  const MIN_BALLS = 6 * (cfg.ignoreK + 1);
+
+  let m = 0;                              // number of balls written to scratch
+  const push = (x, y, z, vx, vy, vz) => {
+    if (m >= MAX_BALLS) return;
+    const o = m * 3;
+    posScratch[o] = x; posScratch[o + 1] = y; posScratch[o + 2] = z;
+    velScratch[o] = vx; velScratch[o + 1] = vy; velScratch[o + 2] = vz;
+    m++;
+  };
+
+  // Keep ball 0 as the anchor, then walk the rest, merging/splitting vs. the
+  // most recently kept ball.
+  push(pos[0], pos[1], pos[2], vel[0], vel[1], vel[2]);
+
+  for (let i = 1; i < n; i++) {
+    const lo = (m - 1) * 3;               // last kept ball
+    const lx = posScratch[lo], ly = posScratch[lo + 1], lz = posScratch[lo + 2];
+    const io = i * 3;
+    const ix = pos[io], iy = pos[io + 1], iz = pos[io + 2];
+    const dx = ix - lx, dy = iy - ly, dz = iz - lz;
+    const dd = dx * dx + dy * dy + dz * dz;
+
+    if (dd < minD2 && m > MIN_BALLS) continue;          // merge: drop ball i
+
+    if (dd > maxD2) {                                   // split: midpoint first
+      push((lx + ix) * 0.5, (ly + iy) * 0.5, (lz + iz) * 0.5,
+           (velScratch[lo] + vel[io]) * 0.5,
+           (velScratch[lo + 1] + vel[io + 1]) * 0.5,
+           (velScratch[lo + 2] + vel[io + 2]) * 0.5);
+    }
+    push(ix, iy, iz, vel[io], vel[io + 1], vel[io + 2]);
+  }
+
+  // Closing edge: last kept ball back to ball 0 (the loop is cyclic).
+  if (m > 1) {
+    const lo = (m - 1) * 3;
+    const dx = posScratch[0] - posScratch[lo];
+    const dy = posScratch[1] - posScratch[lo + 1];
+    const dz = posScratch[2] - posScratch[lo + 2];
+    const dd = dx * dx + dy * dy + dz * dz;
+    if (dd < minD2 && m > MIN_BALLS) {
+      m--;                                              // merge: drop last kept
+    } else if (dd > maxD2) {                            // split: insert midpoint
+      push((posScratch[lo] + posScratch[0]) * 0.5,
+           (posScratch[lo + 1] + posScratch[1]) * 0.5,
+           (posScratch[lo + 2] + posScratch[2]) * 0.5,
+           (velScratch[lo] + velScratch[0]) * 0.5,
+           (velScratch[lo + 1] + velScratch[1]) * 0.5,
+           (velScratch[lo + 2] + velScratch[2]) * 0.5);
+    }
+  }
+
+  pos.set(posScratch.subarray(0, m * 3));
+  vel.set(velScratch.subarray(0, m * 3));
+  if (m !== ballCount) document.getElementById('ballCount').textContent = m;
+  ballCount = m;
+}
+
+// ---------------------------------------------------------------------------
+// Rendering sync
+// ---------------------------------------------------------------------------
+function syncInstances() {
+  const n = ballCount;
+  instMesh.count = n;
+  const r = cfg.radius;
+  for (let i = 0; i < n; i++) {
+    dummy.position.set(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
+    dummy.scale.setScalar(r);
+    dummy.updateMatrix();
+    instMesh.setMatrixAt(i, dummy.matrix);
+    instMesh.setColorAt(i, tmpColor.setRGB(1, 1, 1));
+  }
+  instMesh.instanceMatrix.needsUpdate = true;
+  if (instMesh.instanceColor) instMesh.instanceColor.needsUpdate = true;
+}
+
+function rebuildLinkLine() {
+  if (linkLine) { scene.remove(linkLine); linkLine.geometry.dispose(); linkLine.material.dispose(); linkLine = null; }
+  if (!cfg.showLinks) return;
+  const geo = new THREE.BufferGeometry();
+  // Full-capacity buffer: the ball count changes every frame via the LOD pass.
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MAX_BALLS * 3), 3));
+  linkLine = new THREE.LineLoop(geo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.25 }));
+  scene.add(linkLine);
+}
+
+function syncLinkLine() {
+  if (!linkLine) return;
+  const arr = linkLine.geometry.attributes.position.array;
+  for (let i = 0; i < ballCount; i++) {
+    arr[i * 3] = pos[i * 3]; arr[i * 3 + 1] = pos[i * 3 + 1]; arr[i * 3 + 2] = pos[i * 3 + 2];
+  }
+  linkLine.geometry.setDrawRange(0, ballCount);
+  linkLine.geometry.attributes.position.needsUpdate = true;
+}
+
+// ---------------------------------------------------------------------------
+// Main loop
+// ---------------------------------------------------------------------------
+let lastT = performance.now();
+let fpsAccum = 0, fpsFrames = 0;
+const fpsEl = document.getElementById('fps');
+const pairEl = document.getElementById('pairCount');
+
+function animate(now) {
+  requestAnimationFrame(animate);
+  const frameDt = Math.min((now - lastT) / 1000, 0.05);
+  lastT = now;
+
+  if (!cfg.paused && ballCount) {
+    const dt = 0.18;                     // fixed sim dt for stability
+    for (let s = 0; s < cfg.substeps; s++) step(dt);
+    applyLOD();                          // adaptive resampling of the cycle
+    recenter();                          // re-pin centroid after add/remove
+  }
+
+  syncInstances();
+  syncLinkLine();
+  pairEl.textContent = lastPairCount;
+
+  controls.update();
+  renderer.render(scene, camera);
+
+  // FPS readout (updated ~2×/s).
+  fpsAccum += frameDt; fpsFrames++;
+  if (fpsAccum >= 0.5) {
+    fpsEl.textContent = Math.round(fpsFrames / fpsAccum);
+    fpsAccum = 0; fpsFrames = 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// UI wiring
+// ---------------------------------------------------------------------------
+function bindSlider(id, key, fmt, onChange) {
+  const el = document.getElementById(id);
+  const valEl = document.getElementById(id + 'Val');
+  const update = () => {
+    cfg[key] = parseFloat(el.value);
+    if (valEl) valEl.textContent = fmt ? fmt(cfg[key]) : el.value;
+    if (onChange) onChange();
+  };
+  el.addEventListener('input', update);
+  update();
+}
+
+bindSlider('n', 'n', v => v | 0, regenerateSeed);
+bindSlider('radius', 'radius', v => v.toFixed(2)); // render radius: no rebuild — LOD adapts the chain
+bindSlider('interact', 'interact', v => v.toFixed(2));
+bindSlider('sphere', 'sphere', v => (v % 1 ? v.toFixed(1) : v), () => { updateSpawnSphere(); });
+bindSlider('ignoreK', 'ignoreK', v => v | 0);
+bindSlider('mergeRatio', 'mergeRatio', v => v.toFixed(2));
+bindSlider('splitRatio', 'splitRatio', v => v.toFixed(2));
+bindSlider('spring', 'spring', v => v.toFixed(2));
+bindSlider('collide', 'collide', v => v.toFixed(2));
+bindSlider('damp', 'damp', v => v.toFixed(2));
+bindSlider('jiggle', 'jiggle', v => v.toFixed(2));
+bindSlider('speed', 'substeps', v => v | 0);
+
+document.getElementById('regen').addEventListener('click', regenerateSeed);
+
+const pauseBtn = document.getElementById('pause');
+pauseBtn.addEventListener('click', () => {
+  cfg.paused = !cfg.paused;
+  pauseBtn.textContent = cfg.paused ? 'Resume' : 'Pause';
+});
+
+document.getElementById('showLinks').addEventListener('change', e => {
+  cfg.showLinks = e.target.checked;
+  rebuildLinkLine();
+});
+document.getElementById('showSpawn').addEventListener('change', e => {
+  cfg.showSpawn = e.target.checked;
+  updateSpawnSphere();
+});
+
+function updateSpawnSphere() {
+  spawnSphere.scale.setScalar(cfg.sphere);
+  spawnSphere.visible = cfg.showSpawn;
+}
+
+// ---------------------------------------------------------------------------
+// Resize
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// Boot
+updateSpawnSphere();
+regenerateSeed();
+requestAnimationFrame((t) => { lastT = t; animate(t); });
+
+// Debug handle for automated testing (harmless in production).
+window.__dbg = {
+  instMesh,
+  get pos() { return pos; },
+  get n() { return ballCount; },
+  outputColorSpace: renderer.outputColorSpace,
+  centroid() {
+    let cx = 0, cy = 0, cz = 0;
+    for (let i = 0; i < ballCount; i++) { cx += pos[i*3]; cy += pos[i*3+1]; cz += pos[i*3+2]; }
+    return [cx / ballCount, cy / ballCount, cz / ballCount];
+  },
+  // RMS distance of centers from origin — a measure of overall spread.
+  spread() {
+    let s = 0;
+    for (let i = 0; i < ballCount; i++) s += pos[i*3]**2 + pos[i*3+1]**2 + pos[i*3+2]**2;
+    return Math.sqrt(s / ballCount);
+  },
+};
+</script>
+</body>
+</html>
