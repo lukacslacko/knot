@@ -161,7 +161,13 @@
 
   <details>
     <summary>Physics tuning</summary>
-    <div class="field" style="margin-top:10px">
+    <div class="field" style="margin-top:10px; margin-bottom:8px">
+      <label style="display:flex; align-items:center; gap:6px; color:var(--ink-dim); cursor:pointer">
+        <input type="checkbox" id="lodEnabled" checked style="accent-color:var(--accent)" />
+        LOD (merge / split)
+      </label>
+    </div>
+    <div class="field">
       <div class="row"><label for="mergeRatio">LOD merge (× interact r)</label><span class="val" id="mergeRatioVal">0.30</span></div>
       <input type="range" id="mergeRatio" min="0.1" max="1.0" step="0.05" value="0.3" />
     </div>
@@ -170,8 +176,12 @@
       <input type="range" id="splitRatio" min="0.5" max="2.5" step="0.05" value="0.6" />
     </div>
     <div class="field">
-      <div class="row"><label for="spring">Spring pull (→ 0)</label><span class="val" id="springVal">0.60</span></div>
+      <div class="row"><label for="spring">Spring pull</label><span class="val" id="springVal">0.60</span></div>
       <input type="range" id="spring" min="0" max="2" step="0.02" value="0.6" />
+    </div>
+    <div class="field">
+      <div class="row"><label for="springTarget">Spring target (× interact r)</label><span class="val" id="springTargetVal">0.00</span></div>
+      <input type="range" id="springTarget" min="0" max="0.5" step="0.01" value="0" />
     </div>
     <div class="field">
       <div class="row"><label for="collide">Collision push</label><span class="val" id="collideVal">1.00</span></div>
@@ -192,7 +202,7 @@
     <div class="field" style="margin-bottom:8px">
       <label style="display:flex; align-items:center; gap:6px; color:var(--ink-dim); cursor:pointer">
         <input type="checkbox" id="autoSubsteps" checked style="accent-color:var(--accent)" />
-        Auto substeps → 30 fps
+        Auto substeps → 120 fps
       </label>
     </div>
     <div class="field">
@@ -322,15 +332,17 @@ const cfg = {
   interact: 1.0,        // interaction radius: collision happens within 2·interact; drives LOD spacing
   sphere: 15,
   ignoreK: 7,
+  lodEnabled: true,     // run the adaptive merge/split pass
   mergeRatio: 0.3,      // LOD: drop a ball when a chain edge is shorter than this × interact radius
   splitRatio: 0.6,      // LOD: insert a ball when a chain edge is longer than this × interact radius
   spring: 0.6,
+  springTarget: 0,      // spring rest length as a factor of interact radius (0 = pull together)
   collide: 1.0,
   damp: 0.9,
   jiggle: 0,
   gravity: 0.015,       // downward weight per ball; balls rest on the fixed grid floor
   substeps: 4,
-  autoSubsteps: true,   // adapt substeps each ~0.5s to hold ~30 fps
+  autoSubsteps: true,   // adapt substeps each ~0.5s to hold ~120 fps
   paused: false,
   showLinks: false,
   showSpawn: false,
@@ -467,17 +479,24 @@ function step(dt) {
   const cell = minDist;                  // grid cell = interaction range
   const n = ballCount;
 
+  const restLen = cfg.springTarget * r;  // spring rest length (0 = pull fully together)
+
   // Accumulate forces.
   const force = new Float32Array(n * 3);
 
-  // --- Springs: chain-adjacent balls (closed loop), target length 0 -> pull together.
+  // --- Springs: chain-adjacent balls (closed loop) pull toward `restLen` apart.
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n;
     const dx = pos[j * 3] - pos[i * 3];
     const dy = pos[j * 3 + 1] - pos[i * 3 + 1];
     const dz = pos[j * 3 + 2] - pos[i * 3 + 2];
-    // Target distance 0 => force is proportional to the full separation vector.
-    const fx = k_spring * dx, fy = k_spring * dy, fz = k_spring * dz;
+    // F = k·(dist − restLen) along the edge. (restLen 0 reduces to k·separation.)
+    let scale = k_spring;
+    if (restLen > 0) {
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      scale = dist > 1e-9 ? k_spring * (dist - restLen) / dist : 0;
+    }
+    const fx = scale * dx, fy = scale * dy, fz = scale * dz;
     force[i * 3] += fx;     force[i * 3 + 1] += fy;     force[i * 3 + 2] += fz;
     force[j * 3] -= fx;     force[j * 3 + 1] -= fy;     force[j * 3 + 2] -= fz;
   }
@@ -723,6 +742,7 @@ struct Params {
   dt: f32, kSpring: f32, kCol: f32, interact: f32,
   minDist: f32, gravity: f32, jiggle: f32, damp: f32,
   floorY: f32, cellSize: f32, worldMin: f32, cellCap: u32,
+  restLen: f32, pad0: f32, pad1: f32, pad2: f32,
 };
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read_write> pos: array<f32>;
@@ -732,6 +752,12 @@ struct Params {
 @group(0) @binding(5) var<storage, read_write> cellItems: array<u32>;
 
 fn pv(i: u32) -> vec3<f32> { return vec3<f32>(pos[3u*i], pos[3u*i+1u], pos[3u*i+2u]); }
+fn springForce(d: vec3<f32>) -> vec3<f32> {   // d = neighbor - self
+  if (P.restLen <= 0.0) { return P.kSpring * d; }
+  let l = length(d);
+  if (l < 1e-6) { return vec3<f32>(0.0); }
+  return (P.kSpring * (l - P.restLen) / l) * d;
+}
 fn axis(v: f32) -> i32 {
   return clamp(i32(floor((v - P.worldMin) / P.cellSize)), 0, i32(P.gridDim) - 1);
 }
@@ -765,10 +791,10 @@ fn hash1(s: u32) -> f32 {           // cheap PCG-ish hash -> [0,1)
   if (i >= n) { return; }
   let pi = pv(i);
   var f = vec3<f32>(0.0);
-  // Springs to the two cyclic chain neighbors, target length 0.
+  // Springs to the two cyclic chain neighbors, pulling toward restLen apart.
   let prev = (i + n - 1u) % n;
   let nxt  = (i + 1u) % n;
-  f += P.kSpring * ((pv(prev) - pi) + (pv(nxt) - pi));
+  f += springForce(pv(prev) - pi) + springForce(pv(nxt) - pi);
   // Collisions: scan the 3x3x3 neighbor cells; skip the K nearest chain neighbors.
   let cx = axis(pi.x); let cy = axis(pi.y); let cz = axis(pi.z);
   let gd = i32(P.gridDim);
@@ -835,7 +861,7 @@ async function createGPUEngine() {
   const bytes = MAX_BALLS * 3 * 4;
   const U = GPUBufferUsage;
   const mk = (size, usage) => device.createBuffer({ size, usage });
-  const paramsBuf   = mk(64, U.UNIFORM | U.COPY_DST);
+  const paramsBuf   = mk(80, U.UNIFORM | U.COPY_DST);
   const posBuf      = mk(bytes, U.STORAGE | U.COPY_SRC | U.COPY_DST);
   const velBuf      = mk(bytes, U.STORAGE | U.COPY_SRC | U.COPY_DST);
   const forceBuf    = mk(bytes, U.STORAGE);
@@ -855,7 +881,7 @@ async function createGPUEngine() {
   const bind = device.createBindGroup({ layout: bgl, entries: [paramsBuf, posBuf, velBuf, forceBuf, cellCountBuf, cellItemsBuf]
     .map((buffer, binding) => ({ binding, resource: { buffer } })) });
 
-  const pbuf = new ArrayBuffer(64);
+  const pbuf = new ArrayBuffer(80);
   const pu = new Uint32Array(pbuf), pf = new Float32Array(pbuf);
   let frame = 0;
   const wg = (x) => Math.max(1, Math.ceil(x / 64));
@@ -868,6 +894,7 @@ async function createGPUEngine() {
     pf[4] = 0.18; pf[5] = cfg.spring; pf[6] = cfg.collide; pf[7] = cfg.interact;
     pf[8] = 2 * cfg.interact; pf[9] = cfg.gravity; pf[10] = cfg.jiggle; pf[11] = cfg.damp;
     pf[12] = GROUND_Y + cfg.radius; pf[13] = cellSize; pf[14] = WORLD_MIN; pu[15] = CELL_CAP;
+    pf[16] = cfg.springTarget * cfg.interact;        // spring rest length
     device.queue.writeBuffer(paramsBuf, 0, pbuf);
   }
 
@@ -946,7 +973,8 @@ async function animate() {
       try {
         gpu.step(ballCount, cfg.substeps);
         await gpu.readPositions(ballCount);   // refresh CPU mirror for rendering
-        if (++lodTick >= LOD_INTERVAL) {       // periodic CPU sync: recenter + LOD
+        // Periodic CPU sync for recenter + LOD (only needed when LOD is enabled).
+        if (cfg.lodEnabled && ++lodTick >= LOD_INTERVAL) {
           lodTick = 0;
           await gpu.readVelocities(ballCount);
           recenter();
@@ -961,7 +989,7 @@ async function animate() {
     } else {
       const dt = 0.18;                         // fixed sim dt for stability
       for (let s = 0; s < cfg.substeps; s++) step(dt);
-      applyLOD();
+      if (cfg.lodEnabled) applyLOD();
       recenter();
     }
   }
@@ -986,9 +1014,9 @@ async function animate() {
   requestAnimationFrame(animate);
 }
 
-// Drive the substeps/frame toward whatever holds ~30 fps. Proportional step with
+// Drive the substeps/frame toward whatever holds ~120 fps. Proportional step with
 // a deadband (no thrash near target) and a rate limit (no wild swings).
-const FPS_TARGET = 30;
+const FPS_TARGET = 120;
 const MAX_SUBSTEPS = 120;
 function autoTuneSubsteps(fps) {
   if (fps <= 0 || Math.abs(fps - FPS_TARGET) <= 3) return;
@@ -1027,6 +1055,7 @@ bindSlider('ignoreK', 'ignoreK', v => v | 0);
 bindSlider('mergeRatio', 'mergeRatio', v => v.toFixed(2));
 bindSlider('splitRatio', 'splitRatio', v => v.toFixed(2));
 bindSlider('spring', 'spring', v => v.toFixed(2));
+bindSlider('springTarget', 'springTarget', v => v.toFixed(2));
 bindSlider('collide', 'collide', v => v.toFixed(2));
 bindSlider('damp', 'damp', v => v.toFixed(2));
 bindSlider('jiggle', 'jiggle', v => v.toFixed(2));
@@ -1065,6 +1094,10 @@ document.getElementById('autoSubsteps').addEventListener('change', e => {
   applyAutoSubstepsUI();
 });
 applyAutoSubstepsUI();
+
+document.getElementById('lodEnabled').addEventListener('change', e => {
+  cfg.lodEnabled = e.target.checked;
+});
 
 function updateSpawnSphere() {
   spawnSphere.scale.setScalar(cfg.sphere);
