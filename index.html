@@ -126,18 +126,18 @@
   </div>
 
   <div class="field">
-    <div class="row"><label for="interact">Interact radius</label><span class="val" id="interactVal">0.50</span></div>
-    <input type="range" id="interact" min="0.15" max="2.0" step="0.05" value="0.5" />
+    <div class="row"><label for="interact">Interact radius</label><span class="val" id="interactVal">1.00</span></div>
+    <input type="range" id="interact" min="0.15" max="2.0" step="0.05" value="1.0" />
   </div>
 
   <div class="field">
-    <div class="row"><label for="sphere">Sphere radius (spawn)</label><span class="val" id="sphereVal">10</span></div>
-    <input type="range" id="sphere" min="3" max="20" step="0.5" value="10" />
+    <div class="row"><label for="sphere">Sphere radius (spawn)</label><span class="val" id="sphereVal">15</span></div>
+    <input type="range" id="sphere" min="3" max="20" step="0.5" value="15" />
   </div>
 
   <div class="field">
-    <div class="row"><label for="ignoreK">Ignore K neighbors (collision)</label><span class="val" id="ignoreKVal">4</span></div>
-    <input type="range" id="ignoreK" min="0" max="16" step="1" value="4" />
+    <div class="row"><label for="ignoreK">Ignore K neighbors (collision)</label><span class="val" id="ignoreKVal">7</span></div>
+    <input type="range" id="ignoreK" min="0" max="16" step="1" value="7" />
   </div>
 
   <div class="buttons">
@@ -153,12 +153,12 @@
   <details>
     <summary>Physics tuning</summary>
     <div class="field" style="margin-top:10px">
-      <div class="row"><label for="mergeRatio">LOD merge (× interact r)</label><span class="val" id="mergeRatioVal">0.50</span></div>
-      <input type="range" id="mergeRatio" min="0.1" max="1.0" step="0.05" value="0.5" />
+      <div class="row"><label for="mergeRatio">LOD merge (× interact r)</label><span class="val" id="mergeRatioVal">0.30</span></div>
+      <input type="range" id="mergeRatio" min="0.1" max="1.0" step="0.05" value="0.3" />
     </div>
     <div class="field">
-      <div class="row"><label for="splitRatio">LOD split (× interact r)</label><span class="val" id="splitRatioVal">1.00</span></div>
-      <input type="range" id="splitRatio" min="0.5" max="2.5" step="0.05" value="1.0" />
+      <div class="row"><label for="splitRatio">LOD split (× interact r)</label><span class="val" id="splitRatioVal">0.60</span></div>
+      <input type="range" id="splitRatio" min="0.5" max="2.5" step="0.05" value="0.6" />
     </div>
     <div class="field">
       <div class="row"><label for="spring">Spring pull (→ 0)</label><span class="val" id="springVal">0.60</span></div>
@@ -263,12 +263,12 @@ scene.add(spawnSphere);
 // ---------------------------------------------------------------------------
 const cfg = {
   n: 24,
-  radius: 0.5,          // rendering radius: ball size + spacing of centers
-  interact: 0.5,        // interaction radius: collision happens within 2·interact
-  sphere: 10,
-  ignoreK: 4,
-  mergeRatio: 0.5,      // LOD: drop a ball when a chain edge is shorter than this × interact radius
-  splitRatio: 1.0,      // LOD: insert a ball when a chain edge is longer than this × interact radius
+  radius: 0.5,          // rendering radius: ball size (cosmetic only)
+  interact: 1.0,        // interaction radius: collision happens within 2·interact; drives LOD spacing
+  sphere: 15,
+  ignoreK: 7,
+  mergeRatio: 0.3,      // LOD: drop a ball when a chain edge is shorter than this × interact radius
+  splitRatio: 0.6,      // LOD: insert a ball when a chain edge is longer than this × interact radius
   spring: 0.6,
   collide: 1.0,
   damp: 0.9,
