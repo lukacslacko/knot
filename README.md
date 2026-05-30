@@ -79,10 +79,19 @@ Drag to orbit, scroll to zoom, right-drag to pan.
   against a grey backdrop, so the white balls read as white with real shading.
 - **Collision broad-phase** uses a spatial hash grid (cell size = `2·interact`),
   so only nearby pairs are tested rather than all O(n²) pairs.
-- **Adaptive LOD** rebuilds the cyclic ball sequence each frame into preallocated
-  scratch buffers (no per-frame allocation). A count floor of `2·K + 3` keeps
-  some non-neighbor pairs alive so collisions never fully switch off — otherwise
+- **Adaptive LOD** rebuilds the cyclic ball sequence into preallocated scratch
+  buffers (no per-frame allocation). A count floor of `6·(K+1)` keeps plenty of
+  non-neighbor pairs alive so collisions never fully switch off — otherwise
   over-merging would let the springs implode the loop to a point.
+- **Optional WebGPU compute.** When `navigator.gpu` is available, the whole
+  per-substep physics (springs, a uniform-grid collision broad-phase with atomic
+  binning, gravity, integrate, floor) runs on the GPU; positions are read back
+  each frame to drive the existing instanced rendering, and LOD + recenter run on
+  the CPU every `LOD_INTERVAL` frames. If WebGPU is missing or fails, it falls
+  back to the CPU physics with no change in behavior. The stats line shows
+  **GPU** or **CPU** so you can tell which path is active. The GPU grid uses a
+  fixed per-cell capacity (`CELL_CAP`); extremely dense cells beyond that drop a
+  few collision checks (raise `CELL_CAP`/`GRID_CAP` if needed).
 - **Integration** is damped semi-implicit Euler with a fixed `dt` and several
   substeps per frame for stability.
 - A `window.__dbg` handle (centroid, spread, instance colors) is exposed for

@@ -196,7 +196,7 @@
   </details>
 </div>
 
-<div id="stats">balls <b id="ballCount">0</b> · collision pairs <b id="pairCount">0</b> · <b id="fps">0</b> fps</div>
+<div id="stats">balls <b id="ballCount">0</b> · pairs <b id="pairCount">0</b> · <b id="fps">0</b> fps · <b id="mode">…</b></div>
 <div id="hint">drag to orbit · scroll to zoom · right-drag to pan</div>
 
 <script type="importmap">
@@ -344,6 +344,7 @@ const posScratch = new Float32Array(MAX_BALLS * 3);
 const velScratch = new Float32Array(MAX_BALLS * 3);
 let ballCount = 0;
 let lastPairCount = 0;
+let gpu = null;        // WebGPU physics engine, or null (CPU fallback)
 const ballGeo = new THREE.SphereGeometry(1, 18, 14);
 // NOTE: do NOT set vertexColors here. For an InstancedMesh the per-instance
 // color comes from `instanceColor` (the USE_INSTANCING_COLOR shader path).
@@ -361,7 +362,6 @@ instMesh.castShadow = true;       // balls cast onto each other and the ground
 instMesh.receiveShadow = true;    // ...and receive, so the tangle self-shadows
 scene.add(instMesh);
 
-const dummy = new THREE.Object3D();
 const tmpColor = new THREE.Color();
 
 // Chain link line (toggleable) -----------------------------------------------
@@ -424,6 +424,7 @@ function buildChain() {
   }
   recenter();
   rebuildLinkLine();
+  if (gpu) gpu.upload(ballCount);     // push the fresh chain to the GPU
   document.getElementById('ballCount').textContent = ballCount;
 }
 
@@ -644,21 +645,31 @@ function applyLOD() {
 // ---------------------------------------------------------------------------
 // Rendering sync
 // ---------------------------------------------------------------------------
+let colorN = -1;   // ball count the instance colors were last written for
+
 function syncInstances() {
   const n = ballCount;
   instMesh.count = n;
   const r = cfg.radius;
+  // Write the instance matrices directly (translation + uniform scale) — much
+  // cheaper per frame than going through an Object3D for tens of thousands of balls.
+  const m = instMesh.instanceMatrix.array;
   for (let i = 0; i < n; i++) {
-    dummy.position.set(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
-    dummy.scale.setScalar(r);
-    dummy.updateMatrix();
-    instMesh.setMatrixAt(i, dummy.matrix);
-    // Hue makes one full turn around the cycle so the loop's path reads as a
-    // rainbow gradient from start back to start.
-    instMesh.setColorAt(i, tmpColor.setHSL(i / n, 0.78, 0.55));
+    const o = i * 16, b = i * 3;
+    m[o] = r;     m[o+1] = 0;  m[o+2] = 0;   m[o+3] = 0;
+    m[o+4] = 0;   m[o+5] = r;  m[o+6] = 0;   m[o+7] = 0;
+    m[o+8] = 0;   m[o+9] = 0;  m[o+10] = r;  m[o+11] = 0;
+    m[o+12] = pos[b]; m[o+13] = pos[b+1]; m[o+14] = pos[b+2]; m[o+15] = 1;
   }
   instMesh.instanceMatrix.needsUpdate = true;
-  if (instMesh.instanceColor) instMesh.instanceColor.needsUpdate = true;
+
+  // Hue makes one full turn around the cycle. It only depends on i/n, so we only
+  // rewrite it when the ball count changes (every frame would be wasted work).
+  if (n !== colorN) {
+    for (let i = 0; i < n; i++) instMesh.setColorAt(i, tmpColor.setHSL(i / n, 0.78, 0.55));
+    if (instMesh.instanceColor) instMesh.instanceColor.needsUpdate = true;
+    colorN = n;
+  }
 }
 
 function rebuildLinkLine() {
@@ -679,6 +690,219 @@ function syncLinkLine() {
   }
   linkLine.geometry.setDrawRange(0, ballCount);
   linkLine.geometry.attributes.position.needsUpdate = true;
+}
+
+// ---------------------------------------------------------------------------
+// WebGPU physics engine (optional; falls back to the CPU step() above).
+//
+// Compute-only design: the GPU owns the authoritative positions/velocities and
+// runs the full per-substep physics (spring + collision via a uniform grid +
+// gravity + integrate + floor). Each frame the CPU reads positions back to drive
+// the existing instanced rendering, and every LOD_INTERVAL frames it also reads
+// velocities back to run recenter() + applyLOD() on the CPU and re-upload — so
+// the adaptive level-of-detail happens "from time to time" rather than per frame.
+//
+// Anything missing/failing about WebGPU leaves gpu === null and the app runs the
+// CPU path unchanged.
+// ---------------------------------------------------------------------------
+const GRID_CAP = 64;            // uniform-grid resolution cap per axis (64^3 cells)
+const CELL_CAP = 64;            // max balls tracked per cell (overflow checks dropped)
+const WORLD_MIN = -35, WORLD_SIZE = 70;   // simulation box [-35, 35] per axis
+const LOD_INTERVAL = 20;        // frames between CPU LOD/recenter syncs
+
+const PHYS_WGSL = /* wgsl */`
+struct Params {
+  n: u32, gridDim: u32, ignoreK: u32, frameSeed: u32,
+  dt: f32, kSpring: f32, kCol: f32, interact: f32,
+  minDist: f32, gravity: f32, jiggle: f32, damp: f32,
+  floorY: f32, cellSize: f32, worldMin: f32, cellCap: u32,
+};
+@group(0) @binding(0) var<uniform> P: Params;
+@group(0) @binding(1) var<storage, read_write> pos: array<f32>;
+@group(0) @binding(2) var<storage, read_write> vel: array<f32>;
+@group(0) @binding(3) var<storage, read_write> force: array<f32>;
+@group(0) @binding(4) var<storage, read_write> cellCount: array<atomic<u32>>;
+@group(0) @binding(5) var<storage, read_write> cellItems: array<u32>;
+
+fn pv(i: u32) -> vec3<f32> { return vec3<f32>(pos[3u*i], pos[3u*i+1u], pos[3u*i+2u]); }
+fn axis(v: f32) -> i32 {
+  return clamp(i32(floor((v - P.worldMin) / P.cellSize)), 0, i32(P.gridDim) - 1);
+}
+fn cellOf(p: vec3<f32>) -> u32 {
+  return (u32(axis(p.z))*P.gridDim + u32(axis(p.y)))*P.gridDim + u32(axis(p.x));
+}
+fn hash1(s: u32) -> f32 {           // cheap PCG-ish hash -> [0,1)
+  var x = s * 747796405u + 2891336453u;
+  x = ((x >> ((x >> 28u) + 4u)) ^ x) * 277803737u;
+  x = (x >> 22u) ^ x;
+  return f32(x) / 4294967296.0;
+}
+
+@compute @workgroup_size(64) fn clearGrid(@builtin(global_invocation_id) g: vec3<u32>) {
+  let i = g.x;
+  if (i >= arrayLength(&cellCount)) { return; }
+  atomicStore(&cellCount[i], 0u);
+}
+
+@compute @workgroup_size(64) fn buildGrid(@builtin(global_invocation_id) g: vec3<u32>) {
+  let i = g.x;
+  if (i >= P.n) { return; }
+  let c = cellOf(pv(i));
+  let slot = atomicAdd(&cellCount[c], 1u);
+  if (slot < P.cellCap) { cellItems[c * P.cellCap + slot] = i; }
+}
+
+@compute @workgroup_size(64) fn computeForces(@builtin(global_invocation_id) g: vec3<u32>) {
+  let i = g.x;
+  let n = P.n;
+  if (i >= n) { return; }
+  let pi = pv(i);
+  var f = vec3<f32>(0.0);
+  // Springs to the two cyclic chain neighbors, target length 0.
+  let prev = (i + n - 1u) % n;
+  let nxt  = (i + 1u) % n;
+  f += P.kSpring * ((pv(prev) - pi) + (pv(nxt) - pi));
+  // Collisions: scan the 3x3x3 neighbor cells; skip the K nearest chain neighbors.
+  let cx = axis(pi.x); let cy = axis(pi.y); let cz = axis(pi.z);
+  let gd = i32(P.gridDim);
+  let md2 = P.minDist * P.minDist;
+  for (var oz = -1; oz <= 1; oz++) {
+    let zz = clamp(cz + oz, 0, gd - 1);
+    for (var oy = -1; oy <= 1; oy++) {
+      let yy = clamp(cy + oy, 0, gd - 1);
+      for (var ox = -1; ox <= 1; ox++) {
+        let xx = clamp(cx + ox, 0, gd - 1);
+        let cid = (u32(zz)*P.gridDim + u32(yy))*P.gridDim + u32(xx);
+        let cnt = min(atomicLoad(&cellCount[cid]), P.cellCap);
+        for (var s = 0u; s < cnt; s = s + 1u) {
+          let j = cellItems[cid * P.cellCap + s];
+          if (j == i) { continue; }
+          let di = select(j - i, i - j, i > j);   // |i - j|
+          let cyc = min(di, n - di);
+          if (cyc <= P.ignoreK) { continue; }
+          let diff = pv(j) - pi;                   // from i to j
+          let d2 = dot(diff, diff);
+          if (d2 >= md2 || d2 < 1e-12) { continue; }
+          let dist = sqrt(d2);
+          f += (P.kCol * (P.minDist - dist) / dist) * (-diff);   // push i away from j
+        }
+      }
+    }
+  }
+  f.y -= P.gravity;
+  if (P.jiggle > 0.0) {
+    let r = vec3<f32>(hash1(3u*i + P.frameSeed),
+                      hash1(3u*i + 1u + P.frameSeed*7u),
+                      hash1(3u*i + 2u + P.frameSeed*13u)) * 2.0 - 1.0;
+    f += r * P.jiggle;
+  }
+  force[3u*i] = f.x; force[3u*i+1u] = f.y; force[3u*i+2u] = f.z;
+}
+
+@compute @workgroup_size(64) fn integrate(@builtin(global_invocation_id) g: vec3<u32>) {
+  let i = g.x;
+  if (i >= P.n) { return; }
+  let b = 3u*i;
+  var v = vec3<f32>(vel[b], vel[b+1u], vel[b+2u]);
+  let fo = vec3<f32>(force[b], force[b+1u], force[b+2u]);
+  var p = vec3<f32>(pos[b], pos[b+1u], pos[b+2u]);
+  v = (v + fo * P.dt) * P.damp;
+  p += v * P.dt;
+  if (p.y < P.floorY) { p.y = P.floorY; if (v.y < 0.0) { v.y = 0.0; } }
+  pos[b]=p.x; pos[b+1u]=p.y; pos[b+2u]=p.z;
+  vel[b]=v.x; vel[b+1u]=v.y; vel[b+2u]=v.z;
+}`;
+
+async function createGPUEngine() {
+  if (!('gpu' in navigator)) return null;
+  let device;
+  try {
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+    if (!adapter) return null;
+    device = await adapter.requestDevice();
+  } catch (e) { console.warn('WebGPU unavailable, using CPU physics:', e); return null; }
+  device.addEventListener && device.addEventListener('uncapturederror',
+    ev => console.error('WebGPU error:', ev.error && ev.error.message));
+
+  const numCells = GRID_CAP * GRID_CAP * GRID_CAP;
+  const bytes = MAX_BALLS * 3 * 4;
+  const U = GPUBufferUsage;
+  const mk = (size, usage) => device.createBuffer({ size, usage });
+  const paramsBuf   = mk(64, U.UNIFORM | U.COPY_DST);
+  const posBuf      = mk(bytes, U.STORAGE | U.COPY_SRC | U.COPY_DST);
+  const velBuf      = mk(bytes, U.STORAGE | U.COPY_SRC | U.COPY_DST);
+  const forceBuf    = mk(bytes, U.STORAGE);
+  const cellCountBuf= mk(numCells * 4, U.STORAGE);
+  const cellItemsBuf= mk(numCells * CELL_CAP * 4, U.STORAGE);
+  const posStaging  = mk(bytes, U.MAP_READ | U.COPY_DST);
+  const velStaging  = mk(bytes, U.MAP_READ | U.COPY_DST);
+
+  const module = device.createShaderModule({ code: PHYS_WGSL });
+  const bgl = device.createBindGroupLayout({ entries: [0,1,2,3,4,5].map(binding => ({
+    binding, visibility: GPUShaderStage.COMPUTE,
+    buffer: { type: binding === 0 ? 'uniform' : 'storage' },
+  })) });
+  const pl = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
+  const pipe = (entryPoint) => device.createComputePipeline({ layout: pl, compute: { module, entryPoint } });
+  const pipes = { clear: pipe('clearGrid'), build: pipe('buildGrid'), forces: pipe('computeForces'), integrate: pipe('integrate') };
+  const bind = device.createBindGroup({ layout: bgl, entries: [paramsBuf, posBuf, velBuf, forceBuf, cellCountBuf, cellItemsBuf]
+    .map((buffer, binding) => ({ binding, resource: { buffer } })) });
+
+  const pbuf = new ArrayBuffer(64);
+  const pu = new Uint32Array(pbuf), pf = new Float32Array(pbuf);
+  let frame = 0;
+  const wg = (x) => Math.max(1, Math.ceil(x / 64));
+
+  function writeParams(n, seed) {
+    let cellSize = 2 * cfg.interact;                 // ±1 cell covers the interaction range
+    let gridDim = Math.ceil(WORLD_SIZE / cellSize);
+    if (gridDim > GRID_CAP) { gridDim = GRID_CAP; cellSize = WORLD_SIZE / gridDim; }
+    pu[0] = n; pu[1] = gridDim; pu[2] = cfg.ignoreK; pu[3] = seed >>> 0;
+    pf[4] = 0.18; pf[5] = cfg.spring; pf[6] = cfg.collide; pf[7] = cfg.interact;
+    pf[8] = 2 * cfg.interact; pf[9] = cfg.gravity; pf[10] = cfg.jiggle; pf[11] = cfg.damp;
+    pf[12] = GROUND_Y + cfg.radius; pf[13] = cellSize; pf[14] = WORLD_MIN; pu[15] = CELL_CAP;
+    device.queue.writeBuffer(paramsBuf, 0, pbuf);
+  }
+
+  function stepGPU(n, substeps) {
+    for (let s = 0; s < substeps; s++) {
+      writeParams(n, frame * 31 + s);
+      const enc = device.createCommandEncoder();
+      // Separate passes per stage so writes are ordered (clear -> build -> forces -> integrate).
+      const dispatch = (pipeline, count) => {
+        const p = enc.beginComputePass();
+        p.setPipeline(pipeline); p.setBindGroup(0, bind);
+        p.dispatchWorkgroups(wg(count)); p.end();
+      };
+      dispatch(pipes.clear, numCells);
+      dispatch(pipes.build, n);
+      dispatch(pipes.forces, n);
+      dispatch(pipes.integrate, n);
+      device.queue.submit([enc.finish()]);
+    }
+    frame++;
+  }
+
+  async function readInto(srcBuf, staging, n, dest) {
+    const len = n * 3 * 4;
+    const enc = device.createCommandEncoder();
+    enc.copyBufferToBuffer(srcBuf, 0, staging, 0, len);
+    device.queue.submit([enc.finish()]);
+    await staging.mapAsync(GPUMapMode.READ, 0, len);
+    dest.set(new Float32Array(staging.getMappedRange(0, len)));
+    staging.unmap();
+  }
+
+  return {
+    device,
+    step: stepGPU,
+    readPositions: (n) => readInto(posBuf, posStaging, n, pos),
+    readVelocities: (n) => readInto(velBuf, velStaging, n, vel),
+    upload: (n) => {
+      device.queue.writeBuffer(posBuf, 0, pos, 0, n * 3);
+      device.queue.writeBuffer(velBuf, 0, vel, 0, n * 3);
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -703,21 +927,41 @@ function followCentroidY() {
   camera.position.y += dy;
 }
 
-function animate(now) {
-  requestAnimationFrame(animate);
+let lodTick = 0;
+
+async function animate() {
+  const now = performance.now();
   const frameDt = Math.min((now - lastT) / 1000, 0.05);
   lastT = now;
 
   if (!cfg.paused && ballCount) {
-    const dt = 0.18;                     // fixed sim dt for stability
-    for (let s = 0; s < cfg.substeps; s++) step(dt);
-    applyLOD();                          // adaptive resampling of the cycle
-    recenter();                          // re-pin centroid after add/remove
+    if (gpu) {
+      try {
+        gpu.step(ballCount, cfg.substeps);
+        await gpu.readPositions(ballCount);   // refresh CPU mirror for rendering
+        if (++lodTick >= LOD_INTERVAL) {       // periodic CPU sync: recenter + LOD
+          lodTick = 0;
+          await gpu.readVelocities(ballCount);
+          recenter();
+          applyLOD();
+          gpu.upload(ballCount);
+        }
+      } catch (e) {
+        console.error('GPU physics failed, falling back to CPU:', e);
+        gpu = null;                            // disable GPU for the rest of the session
+        document.getElementById('mode').textContent = 'CPU (gpu error)';
+      }
+    } else {
+      const dt = 0.18;                         // fixed sim dt for stability
+      for (let s = 0; s < cfg.substeps; s++) step(dt);
+      applyLOD();
+      recenter();
+    }
   }
 
   syncInstances();
   syncLinkLine();
-  pairEl.textContent = lastPairCount;
+  pairEl.textContent = gpu ? '—' : lastPairCount;
 
   followCentroidY();
   controls.update();
@@ -729,6 +973,8 @@ function animate(now) {
     fpsEl.textContent = Math.round(fpsFrames / fpsAccum);
     fpsAccum = 0; fpsFrames = 0;
   }
+
+  requestAnimationFrame(animate);
 }
 
 // ---------------------------------------------------------------------------
@@ -796,9 +1042,14 @@ window.addEventListener('resize', () => {
 });
 
 // Boot
-updateSpawnSphere();
-regenerateSeed();
-requestAnimationFrame((t) => { lastT = t; animate(t); });
+(async () => {
+  updateSpawnSphere();
+  gpu = await createGPUEngine();        // null if WebGPU is unavailable / fails
+  document.getElementById('mode').textContent = gpu ? 'GPU' : 'CPU';
+  regenerateSeed();                     // fills CPU pos/vel; uploads to GPU if present
+  lastT = performance.now();
+  requestAnimationFrame(animate);
+})();
 
 // Debug handle for automated testing (harmless in production).
 window.__dbg = {
