@@ -125,7 +125,7 @@
 
   <div class="field">
     <div class="row"><label for="n">Random points (N)</label><span class="val" id="nVal">24</span></div>
-    <input type="range" id="n" min="3" max="120" step="1" value="24" />
+    <input type="range" id="n" min="3" max="250" step="1" value="24" />
   </div>
 
   <div class="field">
@@ -189,9 +189,15 @@
       <div class="row"><label for="gravity">Gravity</label><span class="val" id="gravityVal">0.015</span></div>
       <input type="range" id="gravity" min="0" max="0.2" step="0.005" value="0.015" />
     </div>
+    <div class="field" style="margin-bottom:8px">
+      <label style="display:flex; align-items:center; gap:6px; color:var(--ink-dim); cursor:pointer">
+        <input type="checkbox" id="autoSubsteps" checked style="accent-color:var(--accent)" />
+        Auto substeps → 30 fps
+      </label>
+    </div>
     <div class="field">
       <div class="row"><label for="speed">Sim substeps / frame</label><span class="val" id="speedVal">4</span></div>
-      <input type="range" id="speed" min="1" max="10" step="1" value="4" />
+      <input type="range" id="speed" min="1" max="120" step="1" value="4" />
     </div>
   </details>
 </div>
@@ -324,6 +330,7 @@ const cfg = {
   jiggle: 0,
   gravity: 0.015,       // downward weight per ball; balls rest on the fixed grid floor
   substeps: 4,
+  autoSubsteps: true,   // adapt substeps each ~0.5s to hold ~30 fps
   paused: false,
   showLinks: false,
   showSpawn: false,
@@ -967,14 +974,34 @@ async function animate() {
   controls.update();
   renderer.render(scene, camera);
 
-  // FPS readout (updated ~2×/s).
+  // FPS readout (updated ~2×/s) + auto substeps controller.
   fpsAccum += frameDt; fpsFrames++;
   if (fpsAccum >= 0.5) {
-    fpsEl.textContent = Math.round(fpsFrames / fpsAccum);
+    const fps = fpsFrames / fpsAccum;
+    fpsEl.textContent = Math.round(fps);
     fpsAccum = 0; fpsFrames = 0;
+    if (cfg.autoSubsteps && !cfg.paused) autoTuneSubsteps(fps);
   }
 
   requestAnimationFrame(animate);
+}
+
+// Drive the substeps/frame toward whatever holds ~30 fps. Proportional step with
+// a deadband (no thrash near target) and a rate limit (no wild swings).
+const FPS_TARGET = 30;
+const MAX_SUBSTEPS = 120;
+function autoTuneSubsteps(fps) {
+  if (fps <= 0 || Math.abs(fps - FPS_TARGET) <= 3) return;
+  let next = Math.round(cfg.substeps * fps / FPS_TARGET);     // fps ~ inversely ∝ substeps
+  next = Math.max(cfg.substeps - 8, Math.min(cfg.substeps + 8, next));   // rate limit
+  next = Math.max(1, Math.min(MAX_SUBSTEPS, next));
+  if (next !== cfg.substeps) { cfg.substeps = next; setSubstepsDisplay(next); }
+}
+function setSubstepsDisplay(v) {
+  const el = document.getElementById('speed');
+  if (el) el.value = v;
+  const valEl = document.getElementById('speedVal');
+  if (valEl) valEl.textContent = v;
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,6 +1053,18 @@ document.getElementById('showSpawn').addEventListener('change', e => {
   cfg.showSpawn = e.target.checked;
   updateSpawnSphere();
 });
+
+// Auto-substeps: when on, the controller drives the slider, so disable manual input.
+const speedEl = document.getElementById('speed');
+function applyAutoSubstepsUI() {
+  speedEl.disabled = cfg.autoSubsteps;
+  speedEl.style.opacity = cfg.autoSubsteps ? 0.5 : 1;
+}
+document.getElementById('autoSubsteps').addEventListener('change', e => {
+  cfg.autoSubsteps = e.target.checked;
+  applyAutoSubstepsUI();
+});
+applyAutoSubstepsUI();
 
 function updateSpawnSphere() {
   spawnSphere.scale.setScalar(cfg.sphere);
