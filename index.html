@@ -27,6 +27,8 @@
 
   #panel {
     position: fixed; top: 16px; left: 16px; width: 286px;
+    max-height: calc(100vh - 32px);
+    overflow-y: auto; overscroll-behavior: contain;
     background: var(--panel);
     border: 1px solid var(--panel-border);
     border-radius: 14px;
@@ -36,6 +38,12 @@
     padding: 16px 16px 14px;
     user-select: none;
   }
+  /* Slim scrollbar that only shows when the panel overflows. */
+  #panel::-webkit-scrollbar { width: 8px; }
+  #panel::-webkit-scrollbar-thumb {
+    background: rgba(120, 140, 190, 0.35); border-radius: 8px;
+  }
+  #panel { scrollbar-width: thin; scrollbar-color: rgba(120,140,190,0.35) transparent; }
   #panel h1 {
     font-size: 14px; font-weight: 650; letter-spacing: 0.2px;
     margin: 0 0 2px; display: flex; align-items: center; gap: 8px;
@@ -178,8 +186,8 @@
       <input type="range" id="jiggle" min="0" max="3" step="0.05" value="0" />
     </div>
     <div class="field">
-      <div class="row"><label for="gravity">Gravity</label><span class="val" id="gravityVal">0.30</span></div>
-      <input type="range" id="gravity" min="0" max="3" step="0.05" value="0.3" />
+      <div class="row"><label for="gravity">Gravity</label><span class="val" id="gravityVal">0.010</span></div>
+      <input type="range" id="gravity" min="0" max="0.2" step="0.005" value="0.01" />
     </div>
     <div class="field">
       <div class="row"><label for="speed">Sim substeps / frame</label><span class="val" id="speedVal">4</span></div>
@@ -314,7 +322,7 @@ const cfg = {
   collide: 1.0,
   damp: 0.9,
   jiggle: 0,
-  gravity: 0.3,         // downward weight per ball; balls rest on the fixed grid floor
+  gravity: 0.01,        // downward weight per ball; balls rest on the fixed grid floor
   substeps: 4,
   paused: false,
   showLinks: false,
@@ -749,7 +757,7 @@ bindSlider('spring', 'spring', v => v.toFixed(2));
 bindSlider('collide', 'collide', v => v.toFixed(2));
 bindSlider('damp', 'damp', v => v.toFixed(2));
 bindSlider('jiggle', 'jiggle', v => v.toFixed(2));
-bindSlider('gravity', 'gravity', v => v.toFixed(2));
+bindSlider('gravity', 'gravity', v => v.toFixed(3));
 bindSlider('speed', 'substeps', v => v | 0);
 
 document.getElementById('regen').addEventListener('click', regenerateSeed);
