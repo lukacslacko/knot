@@ -129,8 +129,8 @@
   </div>
 
   <div class="field">
-    <div class="row"><label for="radius">Render radius</label><span class="val" id="radiusVal">0.50</span></div>
-    <input type="range" id="radius" min="0.15" max="2.0" step="0.05" value="0.5" />
+    <div class="row"><label for="radius">Render radius</label><span class="val" id="radiusVal">1.00</span></div>
+    <input type="range" id="radius" min="0.15" max="2.0" step="0.05" value="1.0" />
   </div>
 
   <div class="field">
@@ -186,8 +186,8 @@
       <input type="range" id="jiggle" min="0" max="3" step="0.05" value="0" />
     </div>
     <div class="field">
-      <div class="row"><label for="gravity">Gravity</label><span class="val" id="gravityVal">0.010</span></div>
-      <input type="range" id="gravity" min="0" max="0.2" step="0.005" value="0.01" />
+      <div class="row"><label for="gravity">Gravity</label><span class="val" id="gravityVal">0.015</span></div>
+      <input type="range" id="gravity" min="0" max="0.2" step="0.005" value="0.015" />
     </div>
     <div class="field">
       <div class="row"><label for="speed">Sim substeps / frame</label><span class="val" id="speedVal">4</span></div>
@@ -312,7 +312,7 @@ scene.add(spawnSphere);
 // ---------------------------------------------------------------------------
 const cfg = {
   n: 24,
-  radius: 0.5,          // rendering radius: ball size (cosmetic only)
+  radius: 1.0,          // rendering radius: ball size (cosmetic only)
   interact: 1.0,        // interaction radius: collision happens within 2·interact; drives LOD spacing
   sphere: 15,
   ignoreK: 7,
@@ -322,7 +322,7 @@ const cfg = {
   collide: 1.0,
   damp: 0.9,
   jiggle: 0,
-  gravity: 0.01,        // downward weight per ball; balls rest on the fixed grid floor
+  gravity: 0.015,       // downward weight per ball; balls rest on the fixed grid floor
   substeps: 4,
   paused: false,
   showLinks: false,
