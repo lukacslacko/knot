@@ -146,6 +146,7 @@
   </div>
 
   <div class="toggles">
+    <label><input type="checkbox" id="shadows" checked /> Shadows</label>
     <label><input type="checkbox" id="showLinks" /> Chain links</label>
     <label><input type="checkbox" id="showSpawn" /> Spawn sphere</label>
   </div>
@@ -210,6 +211,10 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 // them to a flat white blob, so lit faces keep a visible rounded gradient.
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
+// Soft shadows. Kept enabled at the renderer level; the "Shadows" toggle flips
+// the key light's castShadow so turning it off skips the extra depth pass.
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 appEl.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -239,16 +244,44 @@ const keyDirs = [
   { color: 0xbcd0ff, intensity: 0.75, pos: [-13,  -1,  -4] }, // dim cool fill
   { color: 0x88aaff, intensity: 1.15, pos: [ -6,   8, -14] }, // back rim (edge separation)
 ];
-for (const d of keyDirs) {
+let keyLight = null;
+keyDirs.forEach((d, idx) => {
   const light = new THREE.DirectionalLight(d.color, d.intensity);
   light.position.set(...d.pos);
   scene.add(light);
-}
+  if (idx === 0) keyLight = light;          // only the dominant key casts shadows
+});
+
+// Shadow setup on the key light. Orthographic frustum sized to comfortably
+// contain the relaxed knot; normalBias counters self-shadow acne on the
+// low-poly spheres' faceted normals. castShadow is the on/off switch.
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.near = 1;
+keyLight.shadow.camera.far = 70;
+keyLight.shadow.camera.left = -28;
+keyLight.shadow.camera.right = 28;
+keyLight.shadow.camera.top = 28;
+keyLight.shadow.camera.bottom = -28;
+keyLight.shadow.bias = -0.0004;
+keyLight.shadow.normalBias = 0.06;
 
 // Subtle ground grid for spatial orientation
 const grid = new THREE.GridHelper(80, 40, 0x2a3450, 0x1a2236);
 grid.position.y = -22;
 scene.add(grid);
+
+// Shadow catcher: a transparent plane that shows ONLY the received shadow, so it
+// grounds the knot without adding a visible floor. When the key light isn't
+// casting (shadows off), ShadowMaterial draws nothing.
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(400, 400),
+  new THREE.ShadowMaterial({ opacity: 0.32 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -22;
+ground.receiveShadow = true;
+scene.add(ground);
 
 // Spawn-sphere reference wireframe (toggleable)
 const spawnSphere = new THREE.Mesh(
@@ -277,6 +310,7 @@ const cfg = {
   paused: false,
   showLinks: false,
   showSpawn: false,
+  shadows: true,
 };
 
 // Instanced rendering ---------------------------------------------------------
@@ -306,6 +340,8 @@ let instMesh = new THREE.InstancedMesh(ballGeo, ballMat, MAX_BALLS);
 instMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 instMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_BALLS * 3), 3);
 instMesh.count = 0;
+instMesh.castShadow = true;       // balls cast onto each other and the ground
+instMesh.receiveShadow = true;    // ...and receive, so the tangle self-shadows
 scene.add(instMesh);
 
 const dummy = new THREE.Object3D();
@@ -683,6 +719,10 @@ pauseBtn.addEventListener('click', () => {
   pauseBtn.textContent = cfg.paused ? 'Resume' : 'Pause';
 });
 
+document.getElementById('shadows').addEventListener('change', e => {
+  cfg.shadows = e.target.checked;
+  keyLight.castShadow = cfg.shadows;        // off = skip the shadow depth pass
+});
 document.getElementById('showLinks').addEventListener('change', e => {
   cfg.showLinks = e.target.checked;
   rebuildLinkLine();

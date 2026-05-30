@@ -62,6 +62,7 @@ software renderers will look dim.
 | **Ignore K neighbors** | How many chain-neighbors (each direction) are exempt from collision. Higher = the loop pulls together more tightly. Default 4. |
 | **Regenerate** | Draw a fresh set of random points. |
 | **Pause / Resume** | Freeze or resume the simulation. |
+| **Shadows** | Soft shadows: the rope self-shadows and casts onto a ground catcher. On by default; turn off to skip the shadow pass. |
 | **Chain links** | Draw the loop connectivity as a line. |
 | **Spawn sphere** | Show the wireframe spawn sphere for reference. |
 | **Physics tuning** | LOD merge/split ratios (× interact radius), spring pull, collision push, damping, jiggle, and substeps/frame. |
