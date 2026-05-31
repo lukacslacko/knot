@@ -28,6 +28,10 @@ into a self-organizing, self-avoiding clump.
      grid floor that it can't sink through, so it settles into a resting pile.
      The centroid is kept horizontally centered (`x=z=0`) while its height is
      left free, and the camera pans up/down to keep looking at the centroid.
+   - **Click a ball to cut it out.** Connectivity is tracked per-edge (`bond[]`),
+     so the first cut turns the loop into one open segment and later cuts split a
+     segment into two. With LOD on the freed segments contract; with LOD off they
+     stay as a tangle of spaghetti.
 
 The result: the loop collapses out of its sphere-filling tangle into a compact,
 evenly-beaded, self-avoiding rope that settles at the length where the spring
