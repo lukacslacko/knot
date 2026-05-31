@@ -163,7 +163,7 @@
     <summary>Physics tuning</summary>
     <div class="field" style="margin-top:10px; margin-bottom:8px">
       <label style="display:flex; align-items:center; gap:6px; color:var(--ink-dim); cursor:pointer">
-        <input type="checkbox" id="lodEnabled" checked style="accent-color:var(--accent)" />
+        <input type="checkbox" id="lodEnabled" style="accent-color:var(--accent)" />
         LOD (merge / split)
       </label>
     </div>
@@ -332,7 +332,7 @@ const cfg = {
   interact: 1.0,        // interaction radius: collision happens within 2·interact; drives LOD spacing
   sphere: 15,
   ignoreK: 7,
-  lodEnabled: true,     // run the adaptive merge/split pass
+  lodEnabled: false,    // run the adaptive merge/split pass
   mergeRatio: 0.3,      // LOD: drop a ball when a chain edge is shorter than this × interact radius
   splitRatio: 0.6,      // LOD: insert a ball when a chain edge is longer than this × interact radius
   spring: 0.6,
@@ -364,9 +364,14 @@ let vel = new Float32Array(MAX_BALLS * 3);
 // cycle into open segments. `topoClosed` is true only for the untouched loop.
 let bond = new Uint32Array(MAX_BALLS);
 let topoClosed = true;
+// Per-ball hue, assigned once as the rainbow gradient and then carried through
+// removals/LOD so a ball keeps its color (cutting doesn't reshuffle the palette).
+let hue = new Float32Array(MAX_BALLS);
+let colorsDirty = true;
 const posScratch = new Float32Array(MAX_BALLS * 3);
 const velScratch = new Float32Array(MAX_BALLS * 3);
 const bondScratch = new Uint32Array(MAX_BALLS);
+const hueScratch = new Float32Array(MAX_BALLS);
 const pendingRemovals = [];   // ball indices clicked, processed one per frame
 let ballCount = 0;
 let lastPairCount = 0;
@@ -448,8 +453,10 @@ function buildChain() {
     pos[i * 3 + 2] = centers[i].z;
     vel[i * 3 + 0] = vel[i * 3 + 1] = vel[i * 3 + 2] = 0;
     bond[i] = 1;                       // fresh closed loop: every ball bonded onward
+    hue[i] = i / ballCount;            // one full turn of hue around the cycle
   }
   topoClosed = true;
+  colorsDirty = true;
   pendingRemovals.length = 0;
   recenter();
   rebuildLinkLine();
@@ -621,22 +628,23 @@ function applyLOD() {
 
   let m = 0;                                 // balls written to scratch
   // `bondedToPrev` records the edge from the previously-pushed ball to this one.
-  const push = (x, y, z, vx, vy, vz, bondedToPrev) => {
+  const push = (x, y, z, vx, vy, vz, h, bondedToPrev) => {
     if (m >= MAX_BALLS) return;
     if (m > 0) bondScratch[m - 1] = bondedToPrev ? 1 : 0;
     const o = m * 3;
     posScratch[o] = x; posScratch[o + 1] = y; posScratch[o + 2] = z;
     velScratch[o] = vx; velScratch[o + 1] = vy; velScratch[o + 2] = vz;
+    hueScratch[m] = h;
     m++;
   };
 
-  push(pos[0], pos[1], pos[2], vel[0], vel[1], vel[2], false);
+  push(pos[0], pos[1], pos[2], vel[0], vel[1], vel[2], hue[0], false);
 
   for (let i = 1; i < n; i++) {
     const io = i * 3;
     const ix = pos[io], iy = pos[io + 1], iz = pos[io + 2];
     if (!bond[i - 1]) {                       // cut before i: start a new segment
-      push(ix, iy, iz, vel[io], vel[io + 1], vel[io + 2], false);
+      push(ix, iy, iz, vel[io], vel[io + 1], vel[io + 2], hue[i], false);
       continue;
     }
     const lo = (m - 1) * 3;                    // last kept ball (same segment)
@@ -650,9 +658,10 @@ function applyLOD() {
       push((lx + ix) * 0.5, (ly + iy) * 0.5, (lz + iz) * 0.5,
            (velScratch[lo] + vel[io]) * 0.5,
            (velScratch[lo + 1] + vel[io + 1]) * 0.5,
-           (velScratch[lo + 2] + vel[io + 2]) * 0.5, true);
+           (velScratch[lo + 2] + vel[io + 2]) * 0.5,
+           (hueScratch[m - 1] + hue[i]) * 0.5, true);
     }
-    push(ix, iy, iz, vel[io], vel[io + 1], vel[io + 2], true);
+    push(ix, iy, iz, vel[io], vel[io + 1], vel[io + 2], hue[i], true);
   }
 
   // Final edge. For the pristine closed loop it's the wrap edge back to ball 0
@@ -672,7 +681,8 @@ function applyLOD() {
            (posScratch[lo + 2] + posScratch[2]) * 0.5,
            (velScratch[lo] + velScratch[0]) * 0.5,
            (velScratch[lo + 1] + velScratch[1]) * 0.5,
-           (velScratch[lo + 2] + velScratch[2]) * 0.5, true);
+           (velScratch[lo + 2] + velScratch[2]) * 0.5,
+           (hueScratch[m - 1] + hueScratch[0]) * 0.5, true);
       bondScratch[m - 1] = 1;
     } else {
       bondScratch[m - 1] = 1;                  // wrap edge present
@@ -684,6 +694,8 @@ function applyLOD() {
   pos.set(posScratch.subarray(0, m * 3));
   vel.set(velScratch.subarray(0, m * 3));
   bond.set(bondScratch.subarray(0, m));
+  hue.set(hueScratch.subarray(0, m));
+  colorsDirty = true;
   if (m !== ballCount) document.getElementById('ballCount').textContent = m;
   ballCount = m;
 }
@@ -701,12 +713,14 @@ function performRemoval(r) {
       posScratch[o] = pos[so]; posScratch[o + 1] = pos[so + 1]; posScratch[o + 2] = pos[so + 2];
       velScratch[o] = vel[so]; velScratch[o + 1] = vel[so + 1]; velScratch[o + 2] = vel[so + 2];
       bondScratch[k] = 1;
+      hueScratch[k] = hue[src];                // keep each surviving ball's color
       k++;
     }
     bondScratch[k - 1] = 0;                    // open end, no wrap
     pos.set(posScratch.subarray(0, k * 3));
     vel.set(velScratch.subarray(0, k * 3));
     bond.set(bondScratch.subarray(0, k));
+    hue.set(hueScratch.subarray(0, k));
     ballCount = k;
     topoClosed = false;
   } else {
@@ -715,6 +729,7 @@ function performRemoval(r) {
       const o = k * 3, so = (k + 1) * 3;
       pos[o] = pos[so]; pos[o + 1] = pos[so + 1]; pos[o + 2] = pos[so + 2];
       vel[o] = vel[so]; vel[o + 1] = vel[so + 1]; vel[o + 2] = vel[so + 2];
+      hue[k] = hue[k + 1];
     }
     const newN = n - 1;
     for (let k = 0; k < newN; k++) {
@@ -723,14 +738,13 @@ function performRemoval(r) {
     bond.set(bondScratch.subarray(0, newN));
     ballCount = newN;
   }
+  colorsDirty = true;
   document.getElementById('ballCount').textContent = ballCount;
 }
 
 // ---------------------------------------------------------------------------
 // Rendering sync
 // ---------------------------------------------------------------------------
-let colorN = -1;   // ball count the instance colors were last written for
-
 function syncInstances() {
   const n = ballCount;
   instMesh.count = n;
@@ -747,12 +761,12 @@ function syncInstances() {
   }
   instMesh.instanceMatrix.needsUpdate = true;
 
-  // Hue makes one full turn around the cycle. It only depends on i/n, so we only
-  // rewrite it when the ball count changes (every frame would be wasted work).
-  if (n !== colorN) {
-    for (let i = 0; i < n; i++) instMesh.setColorAt(i, tmpColor.setHSL(i / n, 0.78, 0.55));
+  // Colors come from each ball's persistent hue (so cuts/LOD keep ball colors
+  // stable). Only rewritten when the hue array changed, not every frame.
+  if (colorsDirty) {
+    for (let i = 0; i < n; i++) instMesh.setColorAt(i, tmpColor.setHSL(hue[i], 0.78, 0.55));
     if (instMesh.instanceColor) instMesh.instanceColor.needsUpdate = true;
-    colorN = n;
+    colorsDirty = false;
   }
 }
 
@@ -1225,6 +1239,7 @@ window.__dbg = {
   get pos() { return pos; },
   get n() { return ballCount; },
   get bond() { return bond; },
+  get hue() { return hue; },
   get topoClosed() { return topoClosed; },
   bondCount() { let s = 0; for (let i = 0; i < ballCount; i++) s += bond[i]; return s; },
   queueRemoval(i) { pendingRemovals.push(i); },   // simulate a click on ball i
