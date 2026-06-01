@@ -163,7 +163,7 @@
     <summary>Physics tuning</summary>
     <div class="field" style="margin-top:10px; margin-bottom:8px">
       <label style="display:flex; align-items:center; gap:6px; color:var(--ink-dim); cursor:pointer">
-        <input type="checkbox" id="lodEnabled" style="accent-color:var(--accent)" />
+        <input type="checkbox" id="lodEnabled" style="accent-color:var(--accent)" checked />
         LOD (merge / split)
       </label>
     </div>
@@ -332,7 +332,7 @@ const cfg = {
   interact: 1.0,        // interaction radius: collision happens within 2·interact; drives LOD spacing
   sphere: 15,
   ignoreK: 7,
-  lodEnabled: false,    // run the adaptive merge/split pass
+  lodEnabled: true,     // run the adaptive merge/split pass
   mergeRatio: 0.3,      // LOD: drop a ball when a chain edge is shorter than this × interact radius
   splitRatio: 0.6,      // LOD: insert a ball when a chain edge is longer than this × interact radius
   spring: 0.6,
@@ -1106,14 +1106,21 @@ async function animate() {
   requestAnimationFrame(animate);
 }
 
-// Drive the substeps/frame toward whatever holds ~120 fps. Proportional step with
-// a deadband (no thrash near target) and a rate limit (no wild swings).
+// Push substeps/frame as high as the frame budget allows while holding ~120 fps.
+// requestAnimationFrame vsync-caps measured fps at the refresh rate, so once we reach
+// the target the spare headroom is invisible: keep probing upward until fps actually
+// drops, then shed load proportionally. Rate-limited so the count can't swing wildly.
 const FPS_TARGET = 120;
 const MAX_SUBSTEPS = 120;
 function autoTuneSubsteps(fps) {
-  if (fps <= 0 || Math.abs(fps - FPS_TARGET) <= 3) return;
-  let next = Math.round(cfg.substeps * fps / FPS_TARGET);     // fps ~ inversely ∝ substeps
-  next = Math.max(cfg.substeps - 8, Math.min(cfg.substeps + 8, next));   // rate limit
+  if (fps <= 0) return;
+  let next;
+  if (fps < FPS_TARGET - 4) {
+    next = Math.round(cfg.substeps * fps / FPS_TARGET);                   // below target: shed load
+  } else {
+    next = cfg.substeps + Math.max(3, Math.round(cfg.substeps * 0.12));  // at/above target: probe for headroom
+  }
+  next = Math.max(cfg.substeps - 16, Math.min(cfg.substeps + 16, next)); // rate limit
   next = Math.max(1, Math.min(MAX_SUBSTEPS, next));
   if (next !== cfg.substeps) { cfg.substeps = next; setSubstepsDisplay(next); }
 }
