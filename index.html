@@ -1114,15 +1114,28 @@ function autoLodObserve() {
   autoLodPrevCount = ballCount;
 }
 
+// Verbose tracing of the click-to-cut pipeline. Toggle at runtime with
+// `__dbg.debugCut = false`. Logs are tagged [cut] so they're easy to grep/paste.
+let DEBUG_CUT = true;
+
 // Apply one queued click-removal per frame (works paused too). On the GPU path
 // it reads the current state back, cuts on the CPU, and re-uploads.
 async function processRemovals() {
-  if (!pendingRemovals.length || ballCount <= 2) return;
+  if (!pendingRemovals.length || ballCount <= 2) {
+    if (DEBUG_CUT && pendingRemovals.length && ballCount <= 2)
+      console.log(`[cut] DROP all queued — only ${ballCount} balls left (min 3 to cut)`);
+    return;
+  }
   const r = pendingRemovals.shift();
-  if (r >= ballCount) return;
+  if (r >= ballCount) {
+    if (DEBUG_CUT) console.log(`[cut] DROP queued id ${r} — out of range (balls=${ballCount}; count shrank since the click)`);
+    return;
+  }
+  if (DEBUG_CUT) console.log(`[cut] removing ball ${r} (balls=${ballCount}, gpu=${!!gpu}, paused=${cfg.paused})`);
   if (gpu) { await gpu.readPositions(ballCount); await gpu.readVelocities(ballCount); }
   performRemoval(r);
   if (gpu) { gpu.upload(ballCount); gpu.uploadBond(ballCount); }
+  if (DEBUG_CUT) console.log(`[cut] removed -> balls=${ballCount}, topoClosed=${topoClosed}, queueLeft=${pendingRemovals.length}`);
 }
 
 async function animate() {
@@ -1305,16 +1318,52 @@ function updateSpawnSphere() {
 // ---------------------------------------------------------------------------
 const raycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
+const dbgSphere = new THREE.Sphere();   // scratch for logging the broad-phase test
 let downX = 0, downY = 0;
 renderer.domElement.addEventListener('pointerdown', e => { downX = e.clientX; downY = e.clientY; });
 renderer.domElement.addEventListener('pointerup', e => {
-  if (Math.hypot(e.clientX - downX, e.clientY - downY) > 6 || !ballCount) return;  // drag, not click
+  const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+  if (moved > 6 || !ballCount) {   // drag, not click (or nothing to cut)
+    if (DEBUG_CUT) console.log(`[cut] ignored — ${moved > 6 ? `treated as drag (moved ${moved.toFixed(1)}px > 6)` : 'no balls'}`);
+    return;
+  }
   const rect = renderer.domElement.getBoundingClientRect();
   ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
   ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(ndc, camera);
+
+  // FIX: InstancedMesh caches its bounding sphere on the first raycast and never
+  // recomputes it. Our balls move/contract every frame, so the cached sphere goes
+  // stale; once the cloud drifts outside it the broad-phase test rejects the ray
+  // and raycast() returns zero hits with no error — clicks silently do nothing.
+  // Recompute from the current instance matrices before every pick.
+  instMesh.computeBoundingSphere();
+
   const hits = raycaster.intersectObject(instMesh);
-  if (hits.length && hits[0].instanceId != null) pendingRemovals.push(hits[0].instanceId);
+  if (DEBUG_CUT) {
+    const bs = instMesh.boundingSphere;
+    const rayHitsSphere = bs
+      ? raycaster.ray.intersectsSphere(dbgSphere.copy(bs).applyMatrix4(instMesh.matrixWorld))
+      : null;
+    const c = bs ? bs.center : null;
+    console.log(
+      `[cut] click moved=${moved.toFixed(1)}px ndc=(${ndc.x.toFixed(3)},${ndc.y.toFixed(3)}) ` +
+      `balls=${ballCount} instCount=${instMesh.count} ` +
+      `bsphere{r=${bs ? bs.radius.toFixed(2) : '?'}, c=(${c ? `${c.x.toFixed(1)},${c.y.toFixed(1)},${c.z.toFixed(1)}` : '?'})} ` +
+      `rayHitsSphere=${rayHitsSphere} hits=${hits.length} ` +
+      `id=${hits.length ? hits[0].instanceId : '-'} dist=${hits.length ? hits[0].distance.toFixed(2) : '-'} ` +
+      `queue=${pendingRemovals.length}`
+    );
+  }
+  if (hits.length && hits[0].instanceId != null) {
+    pendingRemovals.push(hits[0].instanceId);
+    if (DEBUG_CUT) console.log(`[cut] queued removal of ball ${hits[0].instanceId} (queue now ${pendingRemovals.length})`);
+  } else if (DEBUG_CUT) {
+    console.log('[cut] MISS — ray hit no ball instance' +
+      (instMesh.boundingSphere && !raycaster.ray.intersectsSphere(dbgSphere.copy(instMesh.boundingSphere).applyMatrix4(instMesh.matrixWorld))
+        ? ' (broad-phase rejected: cloud is outside the bounding sphere)'
+        : ' (broad-phase passed; cursor was between balls — aim at a ball center)'));
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1346,6 +1395,8 @@ window.__dbg = {
   get topoClosed() { return topoClosed; },
   bondCount() { let s = 0; for (let i = 0; i < ballCount; i++) s += bond[i]; return s; },
   queueRemoval(i) { pendingRemovals.push(i); },   // simulate a click on ball i
+  get debugCut() { return DEBUG_CUT; },
+  set debugCut(v) { DEBUG_CUT = !!v; },            // __dbg.debugCut = false to silence [cut] logs
   outputColorSpace: renderer.outputColorSpace,
   centroid() {
     let cx = 0, cy = 0, cz = 0;
