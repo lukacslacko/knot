@@ -112,7 +112,13 @@
   #stats b { color: var(--ink); font-weight: 600; }
   #hint {
     position: fixed; bottom: 14px; right: 16px;
-    color: var(--ink-dim); font-size: 11px; text-align: right; opacity: .8;
+    font-size: 11px; text-align: right;
+  }
+  #hint .hint-dim { color: var(--ink-dim); opacity: .8; }   /* unchanged: drag / zoom / pan */
+  #hint .cut-hint {
+    background: #fff; color: #000; font-weight: 600;
+    padding: 2px 7px; border-radius: 6px; margin-left: 4px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.35);
   }
 </style>
 </head>
@@ -128,40 +134,50 @@
     <input type="range" id="n" min="3" max="250" step="1" value="24" />
   </div>
 
-  <div class="field">
-    <div class="row"><label for="radius">Render radius</label><span class="val" id="radiusVal">1.00</span></div>
-    <input type="range" id="radius" min="0.15" max="2.0" step="0.05" value="1.0" />
-  </div>
-
-  <div class="field">
-    <div class="row"><label for="interact">Interact radius</label><span class="val" id="interactVal">1.00</span></div>
-    <input type="range" id="interact" min="0.15" max="2.0" step="0.05" value="1.0" />
-  </div>
-
-  <div class="field">
-    <div class="row"><label for="sphere">Sphere radius (spawn)</label><span class="val" id="sphereVal">15</span></div>
-    <input type="range" id="sphere" min="3" max="20" step="0.5" value="15" />
-  </div>
-
-  <div class="field">
-    <div class="row"><label for="ignoreK">Ignore K neighbors (collision)</label><span class="val" id="ignoreKVal">7</span></div>
-    <input type="range" id="ignoreK" min="0" max="16" step="1" value="7" />
-  </div>
-
   <div class="buttons">
     <button id="regen">Regenerate</button>
-    <button id="pause" class="secondary">Pause</button>
-  </div>
-
-  <div class="toggles">
-    <label><input type="checkbox" id="shadows" checked /> Shadows</label>
-    <label><input type="checkbox" id="showLinks" /> Chain links</label>
-    <label><input type="checkbox" id="showSpawn" /> Spawn sphere</label>
   </div>
 
   <details>
-    <summary>Physics tuning</summary>
+    <summary>More settings</summary>
+
+    <div class="buttons" style="margin-top:10px">
+      <button id="pause" class="secondary">Pause</button>
+    </div>
+
+    <div class="toggles">
+      <label><input type="checkbox" id="shadows" checked /> Shadows</label>
+      <label><input type="checkbox" id="showLinks" /> Chain links</label>
+      <label><input type="checkbox" id="showSpawn" /> Spawn sphere</label>
+    </div>
+
+    <div class="field">
+      <div class="row"><label for="radius">Render radius</label><span class="val" id="radiusVal">1.00</span></div>
+      <input type="range" id="radius" min="0.15" max="2.0" step="0.05" value="1.0" />
+    </div>
+
+    <div class="field">
+      <div class="row"><label for="interact">Interact radius</label><span class="val" id="interactVal">1.00</span></div>
+      <input type="range" id="interact" min="0.15" max="2.0" step="0.05" value="1.0" />
+    </div>
+
+    <div class="field">
+      <div class="row"><label for="sphere">Sphere radius (spawn)</label><span class="val" id="sphereVal">15</span></div>
+      <input type="range" id="sphere" min="3" max="20" step="0.5" value="15" />
+    </div>
+
+    <div class="field">
+      <div class="row"><label for="ignoreK">Ignore K neighbors (collision)</label><span class="val" id="ignoreKVal">7</span></div>
+      <input type="range" id="ignoreK" min="0" max="16" step="1" value="7" />
+    </div>
+
     <div class="field" style="margin-top:10px; margin-bottom:8px">
+      <label style="display:flex; align-items:center; gap:6px; color:var(--ink-dim); cursor:pointer">
+        <input type="checkbox" id="autoLod" checked style="accent-color:var(--accent)" />
+        Auto-LOD (off once settled)
+      </label>
+    </div>
+    <div class="field" style="margin-bottom:8px">
       <label style="display:flex; align-items:center; gap:6px; color:var(--ink-dim); cursor:pointer">
         <input type="checkbox" id="lodEnabled" style="accent-color:var(--accent)" checked />
         LOD (merge / split)
@@ -202,7 +218,7 @@
     <div class="field" style="margin-bottom:8px">
       <label style="display:flex; align-items:center; gap:6px; color:var(--ink-dim); cursor:pointer">
         <input type="checkbox" id="autoSubsteps" checked style="accent-color:var(--accent)" />
-        Auto substeps → 120 fps
+        Auto substeps → <span id="fpsTargetLabel">120</span> fps
       </label>
     </div>
     <div class="field">
@@ -213,7 +229,7 @@
 </div>
 
 <div id="stats">balls <b id="ballCount">0</b> · pairs <b id="pairCount">0</b> · <b id="fps">0</b> fps · <b id="mode">…</b></div>
-<div id="hint">drag to orbit · scroll to zoom · right-drag to pan · click a ball to cut</div>
+<div id="hint"><span class="hint-dim">drag to orbit · scroll to zoom · right-drag to pan</span><span class="cut-hint">click a ball to cut</span></div>
 
 <script type="importmap">
 {
@@ -333,6 +349,7 @@ const cfg = {
   sphere: 15,
   ignoreK: 7,
   lodEnabled: true,     // run the adaptive merge/split pass
+  autoLod: true,        // auto: LOD on at (re)generate, off once the ball count settles
   mergeRatio: 0.3,      // LOD: drop a ball when a chain edge is shorter than this × interact radius
   splitRatio: 0.6,      // LOD: insert a ball when a chain edge is longer than this × interact radius
   spring: 0.6,
@@ -342,7 +359,7 @@ const cfg = {
   jiggle: 0,
   gravity: 0.015,       // downward weight per ball; balls rest on the fixed grid floor
   substeps: 4,
-  autoSubsteps: true,   // adapt substeps each ~0.5s to hold ~120 fps
+  autoSubsteps: true,   // adapt substeps each ~0.5s to hold the fps target (120, or 30 on phones)
   paused: false,
   showLinks: false,
   showSpawn: false,
@@ -422,6 +439,7 @@ function regenerateSeed() {
   seedPoints = [];
   for (let i = 0; i < cfg.n; i++) seedPoints.push(randomInSphere(cfg.sphere));
   buildChain();
+  autoLodArm();                          // auto-LOD: turn LOD on for the fresh chain
 }
 
 // Resample the closed polyline (the cycle through seedPoints) placing ball
@@ -705,6 +723,7 @@ function applyLOD() {
 function performRemoval(r) {
   const n = ballCount;
   if (n <= 2 || r < 0 || r >= n) return;
+  stopLodForCut();                           // a manual cut freezes LOD until regenerate
   if (topoClosed) {
     // Cycle -> single open path starting just after r; ball r is dropped.
     let k = 0;
@@ -1040,6 +1059,61 @@ function followCentroidY() {
 
 let lodTick = 0;
 
+// Auto-LOD: after a fresh build LOD first SPLITS the chain up to working density, then the
+// loop contracts and LOD MERGES the count back down. We sample the count once per
+// AUTO_LOD_OBSERVE_STEPS simulation steps (not per frame/LOD-pass, whose physics-span varies
+// with fps / substeps / GPU vs CPU — that's what made a phone "settle" instantly). Once the
+// count has started dropping, LOD stays on until a sample has strictly MORE balls than the
+// previous one (contraction reversed) or the count is unchanged for AUTO_LOD_FLAT_SAMPLES
+// samples (settled); then LOD switches off for the rest of the run. The opening split-up rise
+// is ignored. Re-armed on every (re)generate; the manual checkbox takes over when unchecked.
+const AUTO_LOD_OBSERVE_STEPS = 64;     // sim steps between settle samples (device-independent clock)
+const AUTO_LOD_FLAT_SAMPLES = 10;      // stop once the count holds steady for this many samples
+let autoLodPrevCount = 0;              // ball count at the previous sample
+let autoLodFlatTicks = 0;              // consecutive samples with no change
+let autoLodContracting = false;        // has the count started dropping yet?
+let autoLodStepBudget = 0;             // sim steps accrued toward the next settle sample
+
+function setLodEnabled(on) {
+  cfg.lodEnabled = on;
+  const el = document.getElementById('lodEnabled');
+  if (el) el.checked = on;             // keep the (disabled) checkbox showing the live state
+}
+// Re-enable LOD and restart settle detection — called whenever a fresh chain is built.
+function autoLodArm() {
+  if (!cfg.autoLod) return;
+  autoLodPrevCount = ballCount;
+  autoLodFlatTicks = 0;
+  autoLodContracting = false;
+  autoLodStepBudget = 0;
+  setLodEnabled(true);
+}
+// A manual cut means the user is sculpting the chain by hand, so freeze LOD right away
+// (auto-mode only) so it won't reshape the edit. Auto-LOD stays armed; since nothing
+// turns LOD back on until autoLodArm(), it resumes only on the next regenerate.
+function stopLodForCut() {
+  if (cfg.autoLod) setLodEnabled(false);
+}
+// Called after each applyLOD, but only acts once AUTO_LOD_OBSERVE_STEPS sim steps have
+// elapsed since the last sample (so the test spans the same physics on any device). Once the
+// count has started dropping, stop LOD when a sample rises above the previous one, or after
+// the count holds steady for AUTO_LOD_FLAT_SAMPLES samples.
+function autoLodObserve() {
+  if (!cfg.autoLod || !cfg.lodEnabled) return;
+  if (autoLodStepBudget < AUTO_LOD_OBSERVE_STEPS) return;   // not enough sim progress since last sample
+  autoLodStepBudget = 0;
+  if (ballCount < autoLodPrevCount) {
+    autoLodContracting = true;                  // loop is shedding balls
+    autoLodFlatTicks = 0;
+  } else if (ballCount > autoLodPrevCount) {
+    if (autoLodContracting) setLodEnabled(false);  // rose again after contracting -> done
+    autoLodFlatTicks = 0;                       // (a rise before contraction is the opening split-up: ignore)
+  } else if (++autoLodFlatTicks >= AUTO_LOD_FLAT_SAMPLES) {
+    setLodEnabled(false);                        // count unchanged for the whole window -> settled
+  }
+  autoLodPrevCount = ballCount;
+}
+
 // Apply one queued click-removal per frame (works paused too). On the GPU path
 // it reads the current state back, cuts on the CPU, and re-uploads.
 async function processRemovals() {
@@ -1060,6 +1134,7 @@ async function animate() {
   catch (e) { console.error('removal failed:', e); pendingRemovals.length = 0; }
 
   if (!cfg.paused && ballCount) {
+    if (cfg.autoLod && cfg.lodEnabled) autoLodStepBudget += cfg.substeps;   // sim progress for auto-LOD
     if (gpu) {
       try {
         gpu.step(ballCount, cfg.substeps);
@@ -1070,6 +1145,7 @@ async function animate() {
           await gpu.readVelocities(ballCount);
           recenter();
           applyLOD();
+          autoLodObserve();                   // auto-LOD: maybe switch LOD off once settled
           gpu.upload(ballCount);
           gpu.uploadBond(ballCount);          // LOD rewrote the bond array
         }
@@ -1081,7 +1157,7 @@ async function animate() {
     } else {
       const dt = 0.18;                         // fixed sim dt for stability
       for (let s = 0; s < cfg.substeps; s++) step(dt);
-      if (cfg.lodEnabled) applyLOD();
+      if (cfg.lodEnabled) { applyLOD(); autoLodObserve(); }
       recenter();
     }
   }
@@ -1110,8 +1186,13 @@ async function animate() {
 // requestAnimationFrame vsync-caps measured fps at the refresh rate, so once we reach
 // the target the spare headroom is invisible: keep probing upward until fps actually
 // drops, then shed load proportionally. Rate-limited so the count can't swing wildly.
-const FPS_TARGET = 120;
+// Phones can't sustain 120 fps, so the controller would otherwise starve substeps
+// to the floor chasing an impossible target — aim for 30 fps on phones instead.
+const IS_PHONE = /Android.+Mobile|iPhone|iPod/i.test(navigator.userAgent)
+  || (navigator.maxTouchPoints > 0 && Math.min(window.innerWidth, window.innerHeight) < 768);
+const FPS_TARGET = IS_PHONE ? 30 : 120;
 const MAX_SUBSTEPS = 120;
+{ const el = document.getElementById('fpsTargetLabel'); if (el) el.textContent = FPS_TARGET; }
 function autoTuneSubsteps(fps) {
   if (fps <= 0) return;
   let next;
@@ -1194,8 +1275,23 @@ document.getElementById('autoSubsteps').addEventListener('change', e => {
 });
 applyAutoSubstepsUI();
 
-document.getElementById('lodEnabled').addEventListener('change', e => {
-  cfg.lodEnabled = e.target.checked;
+// Auto-LOD: when on, LOD is driven automatically (on at generate, off once the count
+// settles), so the manual LOD checkbox is disabled. When off, the user controls it.
+const lodEl = document.getElementById('lodEnabled');
+const lodLabel = lodEl.closest('label');
+function applyAutoLodUI() {
+  lodEl.disabled = cfg.autoLod;
+  if (lodLabel) lodLabel.style.opacity = cfg.autoLod ? 0.5 : 1;
+}
+document.getElementById('autoLod').addEventListener('change', e => {
+  cfg.autoLod = e.target.checked;
+  applyAutoLodUI();
+  if (cfg.autoLod) autoLodArm();          // turning Auto-LOD on re-runs the auto cycle now
+});
+applyAutoLodUI();
+
+lodEl.addEventListener('change', e => {
+  cfg.lodEnabled = e.target.checked;      // only reachable while Auto-LOD is off
 });
 
 function updateSpawnSphere() {
