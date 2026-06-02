@@ -229,7 +229,7 @@
 </div>
 
 <div id="stats">balls <b id="ballCount">0</b> · pairs <b id="pairCount">0</b> · <b id="fps">0</b> fps · <b id="mode">…</b></div>
-<div id="hint"><span class="hint-dim">drag to orbit · scroll to zoom · right-drag to pan</span><span class="cut-hint">click a ball to cut</span></div>
+<div id="hint"><span class="hint-dim">drag empty space to orbit · scroll to zoom · right-drag to pan</span><span class="cut-hint">click a ball to cut · drag a ball to move it</span></div>
 
 <script type="importmap">
 {
@@ -393,6 +393,15 @@ const pendingRemovals = [];   // ball indices clicked, processed one per frame
 let ballCount = 0;
 let lastPairCount = 0;
 let gpu = null;        // WebGPU physics engine, or null (CPU fallback)
+
+// --- Worm dragging -----------------------------------------------------------
+// While the user drags a ball, that ball is PINNED to follow the pointer (in a
+// screen-facing plane at its grab depth) instead of being cut or orbiting the
+// view. The rest of the chain follows through the springs. The pin is a hard
+// constraint applied every substep (CPU) / held by the integrate shader (GPU).
+let dragBall = -1;                        // index of the pinned ball, or -1 when idle
+const dragWorld = new THREE.Vector3();    // world-space target the pinned ball is held at
+let grabCandidate = null;                 // {ball, downX, downY, pointerId} between press and drag/click
 const ballGeo = new THREE.SphereGeometry(1, 18, 14);
 // NOTE: do NOT set vertexColors here. For an InstancedMesh the per-instance
 // color comes from `instanceColor` (the USE_INSTANCING_COLOR shader path).
@@ -617,11 +626,20 @@ function step(dt) {
   }
 
   recenter();
+
+  // Dragged ball: hold it at the pointer target each substep, so the chain reacts
+  // to a hard constraint rather than a single end-of-frame nudge.
+  if (dragBall >= 0 && dragBall < n) {
+    const o = dragBall * 3;
+    pos[o] = dragWorld.x; pos[o + 1] = dragWorld.y; pos[o + 2] = dragWorld.z;
+    vel[o] = vel[o + 1] = vel[o + 2] = 0;
+  }
 }
 
 // Keep the centroid horizontally centered at x=z=0. The vertical position is
 // left free so gravity can pull the knot down onto the floor.
 function recenter() {
+  if (dragBall >= 0) return;          // while dragging a ball, leave the cloud where the user pulls it
   const n = ballCount;
   if (!n) return;
   let cx = 0, cz = 0;
@@ -833,7 +851,7 @@ struct Params {
   dt: f32, kSpring: f32, kCol: f32, interact: f32,
   minDist: f32, gravity: f32, jiggle: f32, damp: f32,
   floorY: f32, cellSize: f32, worldMin: f32, cellCap: u32,
-  restLen: f32, closed: u32, pad1: f32, pad2: f32,
+  restLen: f32, closed: u32, pinIdx: u32, pinFlag: u32,
 };
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read_write> pos: array<f32>;
@@ -929,6 +947,10 @@ fn hash1(s: u32) -> f32 {           // cheap PCG-ish hash -> [0,1)
   let i = g.x;
   if (i >= P.n) { return; }
   let b = 3u*i;
+  if (P.pinFlag == 1u && i == P.pinIdx) {          // user is dragging this ball: hold it in place
+    vel[b]=0.0; vel[b+1u]=0.0; vel[b+2u]=0.0;
+    return;                                        // pos kept at the value the CPU wrote this frame
+  }
   var v = vec3<f32>(vel[b], vel[b+1u], vel[b+2u]);
   let fo = vec3<f32>(force[b], force[b+1u], force[b+2u]);
   var p = vec3<f32>(pos[b], pos[b+1u], pos[b+2u]);
@@ -990,6 +1012,9 @@ async function createGPUEngine() {
     pf[12] = GROUND_Y + cfg.radius; pf[13] = cellSize; pf[14] = WORLD_MIN; pu[15] = CELL_CAP;
     pf[16] = cfg.springTarget * cfg.interact;        // spring rest length
     pu[17] = topoClosed ? 1 : 0;                     // cyclic vs linear exclusion
+    const pinned = dragBall >= 0 && dragBall < n;
+    pu[18] = pinned ? dragBall : 0;                  // index of the user-pinned ball
+    pu[19] = pinned ? 1 : 0;                          // 1 = a ball is being held by a drag
     device.queue.writeBuffer(paramsBuf, 0, pbuf);
   }
 
@@ -1032,6 +1057,11 @@ async function createGPUEngine() {
       device.queue.writeBuffer(velBuf, 0, vel, 0, n * 3);
     },
     uploadBond: (n) => { device.queue.writeBuffer(bondBuf, 0, bond, 0, n); },
+    // Push a single ball's pos+vel to the GPU (used to hold a dragged ball in place).
+    pinUpload: (i) => {
+      device.queue.writeBuffer(posBuf, i * 3 * 4, pos, i * 3, 3);
+      device.queue.writeBuffer(velBuf, i * 3 * 4, vel, i * 3, 3);
+    },
   };
 }
 
@@ -1048,7 +1078,7 @@ const pairEl = document.getElementById('pairCount');
 // needs to track. Moving the camera and the target by the same delta keeps the
 // user's orbit angle and zoom intact — it just follows the knot up and down.
 function followCentroidY() {
-  if (!ballCount) return;
+  if (!ballCount || dragBall >= 0) return;   // freeze the camera while a ball is being dragged
   let cy = 0;
   for (let i = 0; i < ballCount; i++) cy += pos[i * 3 + 1];
   cy /= ballCount;
@@ -1150,10 +1180,17 @@ async function animate() {
     if (cfg.autoLod && cfg.lodEnabled) autoLodStepBudget += cfg.substeps;   // sim progress for auto-LOD
     if (gpu) {
       try {
+        if (dragBall >= 0 && dragBall < ballCount) {
+          const o = dragBall * 3;             // hold the dragged ball at the pointer target
+          pos[o] = dragWorld.x; pos[o + 1] = dragWorld.y; pos[o + 2] = dragWorld.z;
+          vel[o] = vel[o + 1] = vel[o + 2] = 0;
+          gpu.pinUpload(dragBall);            // push it to the GPU before stepping (shader keeps it put)
+        }
         gpu.step(ballCount, cfg.substeps);
         await gpu.readPositions(ballCount);   // refresh CPU mirror for rendering
         // Periodic CPU sync for recenter + LOD (only needed when LOD is enabled).
-        if (cfg.lodEnabled && ++lodTick >= LOD_INTERVAL) {
+        // Frozen while a ball is grabbed so LOD can't shift indices out from under the drag.
+        if (cfg.lodEnabled && !grabCandidate && ++lodTick >= LOD_INTERVAL) {
           lodTick = 0;
           await gpu.readVelocities(ballCount);
           recenter();
@@ -1170,7 +1207,7 @@ async function animate() {
     } else {
       const dt = 0.18;                         // fixed sim dt for stability
       for (let s = 0; s < cfg.substeps; s++) step(dt);
-      if (cfg.lodEnabled) { applyLOD(); autoLodObserve(); }
+      if (cfg.lodEnabled && !grabCandidate) { applyLOD(); autoLodObserve(); }  // freeze LOD during a grab
       recenter();
     }
   }
@@ -1313,57 +1350,107 @@ function updateSpawnSphere() {
 }
 
 // ---------------------------------------------------------------------------
-// Click-to-cut: raycast against the balls and queue the hit for removal. A
-// click that moved more than a few pixels is treated as an orbit drag, not a cut.
+// Pointer gestures on the canvas. A primary press that lands on a ball captures
+// the gesture (OrbitControls is disabled for it) and then resolves three ways:
+//   • released in place (≤ DRAG_THRESH px)  -> click-to-cut that ball
+//   • dragged past the threshold            -> pin the ball, drag the worm
+//   • press on empty space                  -> left to OrbitControls (orbit/pan)
+// While a ball is grabbed, LOD/recenter/camera-follow freeze so the dragged ball
+// keeps a stable index and stays exactly under the pointer.
 // ---------------------------------------------------------------------------
 const raycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
-const dbgSphere = new THREE.Sphere();   // scratch for logging the broad-phase test
-let downX = 0, downY = 0;
-renderer.domElement.addEventListener('pointerdown', e => { downX = e.clientX; downY = e.clientY; });
-renderer.domElement.addEventListener('pointerup', e => {
-  const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
-  if (moved > 6 || !ballCount) {   // drag, not click (or nothing to cut)
-    if (DEBUG_CUT) console.log(`[cut] ignored — ${moved > 6 ? `treated as drag (moved ${moved.toFixed(1)}px > 6)` : 'no balls'}`);
-    return;
-  }
+const DRAG_THRESH = 6;                     // px of motion that turns a press into a drag
+const dragPlane = new THREE.Plane();       // screen-facing plane the pinned ball slides in
+const dragOffset = new THREE.Vector3();    // ball-center minus grab point (so it doesn't pop)
+const dragHit = new THREE.Vector3();       // scratch: ray ∩ dragPlane
+const camDir = new THREE.Vector3();        // scratch: camera view direction
+
+function ndcFromEvent(e) {
   const rect = renderer.domElement.getBoundingClientRect();
   ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
   ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-  raycaster.setFromCamera(ndc, camera);
+  return ndc;
+}
 
-  // FIX: InstancedMesh caches its bounding sphere on the first raycast and never
-  // recomputes it. Our balls move/contract every frame, so the cached sphere goes
-  // stale; once the cloud drifts outside it the broad-phase test rejects the ray
-  // and raycast() returns zero hits with no error — clicks silently do nothing.
-  // Recompute from the current instance matrices before every pick.
+// Raycast the current pointer against the balls; return the hit ball index or -1.
+// Recompute the InstancedMesh bounding sphere first — it caches stale once the
+// cloud moves, which otherwise makes the broad-phase silently reject the ray.
+function pickBall(e) {
+  if (!ballCount) return -1;
+  raycaster.setFromCamera(ndcFromEvent(e), camera);
   instMesh.computeBoundingSphere();
-
   const hits = raycaster.intersectObject(instMesh);
-  if (DEBUG_CUT) {
-    const bs = instMesh.boundingSphere;
-    const rayHitsSphere = bs
-      ? raycaster.ray.intersectsSphere(dbgSphere.copy(bs).applyMatrix4(instMesh.matrixWorld))
-      : null;
-    const c = bs ? bs.center : null;
-    console.log(
-      `[cut] click moved=${moved.toFixed(1)}px ndc=(${ndc.x.toFixed(3)},${ndc.y.toFixed(3)}) ` +
-      `balls=${ballCount} instCount=${instMesh.count} ` +
-      `bsphere{r=${bs ? bs.radius.toFixed(2) : '?'}, c=(${c ? `${c.x.toFixed(1)},${c.y.toFixed(1)},${c.z.toFixed(1)}` : '?'})} ` +
-      `rayHitsSphere=${rayHitsSphere} hits=${hits.length} ` +
-      `id=${hits.length ? hits[0].instanceId : '-'} dist=${hits.length ? hits[0].distance.toFixed(2) : '-'} ` +
-      `queue=${pendingRemovals.length}`
-    );
+  return hits.length && hits[0].instanceId != null ? hits[0].instanceId : -1;
+}
+
+// Begin pinning ball `b`: freeze a screen-facing plane through its center and
+// record the offset between the grab ray and that center so it doesn't jump.
+function startDrag(b, e) {
+  dragBall = b;
+  const o = b * 3;
+  dragWorld.set(pos[o], pos[o + 1], pos[o + 2]);
+  camera.getWorldDirection(camDir);
+  dragPlane.setFromNormalAndCoplanarPoint(camDir, dragWorld);
+  raycaster.setFromCamera(ndcFromEvent(e), camera);
+  if (raycaster.ray.intersectPlane(dragPlane, dragHit)) dragOffset.copy(dragWorld).sub(dragHit);
+  else dragOffset.set(0, 0, 0);
+  if (DEBUG_CUT) console.log(`[drag] start ball ${b}`);
+}
+
+// Move the pin target to wherever the pointer now points on the drag plane.
+function updateDrag(e) {
+  raycaster.setFromCamera(ndcFromEvent(e), camera);
+  if (raycaster.ray.intersectPlane(dragPlane, dragHit)) {
+    dragWorld.copy(dragHit).add(dragOffset);
+    dragWorld.y = Math.max(dragWorld.y, GROUND_Y + cfg.radius);   // don't pull it under the floor
   }
-  if (hits.length && hits[0].instanceId != null) {
-    pendingRemovals.push(hits[0].instanceId);
-    if (DEBUG_CUT) console.log(`[cut] queued removal of ball ${hits[0].instanceId} (queue now ${pendingRemovals.length})`);
-  } else if (DEBUG_CUT) {
-    console.log('[cut] MISS — ray hit no ball instance' +
-      (instMesh.boundingSphere && !raycaster.ray.intersectsSphere(dbgSphere.copy(instMesh.boundingSphere).applyMatrix4(instMesh.matrixWorld))
-        ? ' (broad-phase rejected: cloud is outside the bounding sphere)'
-        : ' (broad-phase passed; cursor was between balls — aim at a ball center)'));
+}
+
+// Release the gesture: drop any pin, re-enable orbit, clear the candidate.
+function endGesture(pointerId) {
+  if (pointerId != null && renderer.domElement.hasPointerCapture?.(pointerId))
+    renderer.domElement.releasePointerCapture(pointerId);
+  grabCandidate = null;
+  dragBall = -1;
+  controls.enabled = true;                 // restore orbit/zoom/pan for the next gesture
+}
+
+renderer.domElement.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;              // left/primary only; right & middle still pan via controls
+  if (grabCandidate) { endGesture(grabCandidate.pointerId); return; }  // 2nd pointer: bail to multi-touch
+  const b = pickBall(e);
+  if (b < 0) return;                       // empty space: leave it to OrbitControls (orbit/pan)
+  controls.enabled = false;                // press landed on a ball: this gesture won't rotate the view
+  grabCandidate = { ball: b, downX: e.clientX, downY: e.clientY, pointerId: e.pointerId };
+  try { renderer.domElement.setPointerCapture(e.pointerId); } catch (_) {}
+});
+
+renderer.domElement.addEventListener('pointermove', e => {
+  if (!grabCandidate || e.pointerId !== grabCandidate.pointerId) return;
+  if (dragBall < 0) {                      // not dragging yet — is this a drag or still a click?
+    const moved = Math.hypot(e.clientX - grabCandidate.downX, e.clientY - grabCandidate.downY);
+    if (moved <= DRAG_THRESH) return;
+    if (grabCandidate.ball >= ballCount) { endGesture(grabCandidate.pointerId); return; }
+    startDrag(grabCandidate.ball, e);      // crossed the threshold: it's a drag
   }
+  updateDrag(e);
+});
+
+renderer.domElement.addEventListener('pointerup', e => {
+  if (!grabCandidate || e.pointerId !== grabCandidate.pointerId) return;
+  const wasDragging = dragBall >= 0;
+  const b = grabCandidate.ball;
+  if (wasDragging && DEBUG_CUT) console.log(`[drag] release ball ${b}`);
+  endGesture(grabCandidate.pointerId);
+  if (!wasDragging && b >= 0 && b < ballCount) {   // released in place -> click-to-cut
+    pendingRemovals.push(b);
+    if (DEBUG_CUT) console.log(`[cut] queued removal of ball ${b} (queue now ${pendingRemovals.length})`);
+  }
+});
+
+renderer.domElement.addEventListener('pointercancel', e => {
+  if (grabCandidate && e.pointerId === grabCandidate.pointerId) endGesture(grabCandidate.pointerId);
 });
 
 // ---------------------------------------------------------------------------
@@ -1395,6 +1482,15 @@ window.__dbg = {
   get topoClosed() { return topoClosed; },
   bondCount() { let s = 0; for (let i = 0; i < ballCount; i++) s += bond[i]; return s; },
   queueRemoval(i) { pendingRemovals.push(i); },   // simulate a click on ball i
+  get dragBall() { return dragBall; },
+  pinBall(i, x, y, z) { dragBall = i; dragWorld.set(x, y, z); },  // simulate dragging ball i to (x,y,z)
+  releaseBall() { dragBall = -1; },               // simulate releasing the dragged ball
+  // Project ball i's center to client pixel coords (for driving real pointer events in tests).
+  projectToScreen(i) {
+    const v = new THREE.Vector3(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]).project(camera);
+    const rect = renderer.domElement.getBoundingClientRect();
+    return { x: (v.x * 0.5 + 0.5) * rect.width + rect.left, y: (-v.y * 0.5 + 0.5) * rect.height + rect.top };
+  },
   get debugCut() { return DEBUG_CUT; },
   set debugCut(v) { DEBUG_CUT = !!v; },            // __dbg.debugCut = false to silence [cut] logs
   outputColorSpace: renderer.outputColorSpace,
